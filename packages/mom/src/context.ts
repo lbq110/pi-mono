@@ -294,4 +294,25 @@ export class MomSettingsManager {
 	getHookTimeout(): number {
 		return 30000;
 	}
+
+	// Additional compatibility methods for AgentSession
+	getImageAutoResize(): boolean {
+		return true;
+	}
+
+	getShellCommandPrefix(): string | undefined {
+		return undefined;
+	}
+
+	getBranchSummarySettings(): { reserveTokens?: number } {
+		return {};
+	}
+
+	getTheme(): string | undefined {
+		return undefined;
+	}
+
+	reload(): void {
+		this.settings = this.load();
+	}
 }

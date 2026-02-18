@@ -1,5 +1,5 @@
 import { Agent, type AgentEvent } from "@mariozechner/pi-agent-core";
-import { getModel, type ImageContent } from "@mariozechner/pi-ai";
+import { type Api, getModels, type ImageContent, type KnownProvider, type Model } from "@mariozechner/pi-ai";
 import {
 	AgentSession,
 	AuthStorage,
@@ -23,8 +23,26 @@ import type { ChannelInfo, SlackContext, UserInfo } from "./slack.js";
 import type { ChannelStore } from "./store.js";
 import { createMomTools, setUploadFunction } from "./tools/index.js";
 
-// Hardcoded model for now - TODO: make configurable (issue #63)
-const model = getModel("anthropic", "claude-sonnet-4-5");
+const DEFAULT_PROVIDER: KnownProvider = "anthropic";
+const DEFAULT_MODEL_ID = "claude-sonnet-4-6";
+
+export function resolveModel(modelArg?: string): Model<Api> {
+	const provider = modelArg ? (modelArg.slice(0, modelArg.indexOf(":")) as KnownProvider) : DEFAULT_PROVIDER;
+	const id = modelArg ? modelArg.slice(modelArg.indexOf(":") + 1) : DEFAULT_MODEL_ID;
+
+	if (modelArg && !modelArg.includes(":")) {
+		throw new Error(
+			`Invalid --model format: "${modelArg}". Expected provider:model (e.g. anthropic:claude-sonnet-4-6)`,
+		);
+	}
+
+	const models = getModels(provider);
+	const model = models.find((m) => m.id === id);
+	if (!model) {
+		throw new Error(`Model "${id}" not found for provider "${provider}"`);
+	}
+	return model;
+}
 
 export interface PendingMessage {
 	userName: string;
@@ -40,14 +58,16 @@ export interface AgentRunner {
 		pendingMessages?: PendingMessage[],
 	): Promise<{ stopReason: string; errorMessage?: string }>;
 	abort(): void;
+	getModel(): Model<Api>;
+	setModel(model: Model<Api>): void;
 }
 
-async function getAnthropicApiKey(authStorage: AuthStorage): Promise<string> {
-	const key = await authStorage.getApiKey("anthropic");
+async function getApiKeyForModel(authStorage: AuthStorage, model: Model<Api>): Promise<string> {
+	const key = await authStorage.getApiKey(model.provider);
 	if (!key) {
 		throw new Error(
-			"No API key found for anthropic.\n\n" +
-				"Set an API key environment variable, or use /login with Anthropic and link to auth.json from " +
+			`No API key found for ${model.provider}.\n\n` +
+				"Set an API key environment variable, or use /login and link to auth.json from " +
 				join(homedir(), ".pi", "mom", "auth.json"),
 		);
 	}
@@ -395,11 +415,16 @@ const channelRunners = new Map<string, AgentRunner>();
  * Get or create an AgentRunner for a channel.
  * Runners are cached - one per channel, persistent across messages.
  */
-export function getOrCreateRunner(sandboxConfig: SandboxConfig, channelId: string, channelDir: string): AgentRunner {
+export function getOrCreateRunner(
+	sandboxConfig: SandboxConfig,
+	channelId: string,
+	channelDir: string,
+	modelArg?: string,
+): AgentRunner {
 	const existing = channelRunners.get(channelId);
 	if (existing) return existing;
 
-	const runner = createRunner(sandboxConfig, channelId, channelDir);
+	const runner = createRunner(sandboxConfig, channelId, channelDir, modelArg);
 	channelRunners.set(channelId, runner);
 	return runner;
 }
@@ -408,7 +433,13 @@ export function getOrCreateRunner(sandboxConfig: SandboxConfig, channelId: strin
  * Create a new AgentRunner for a channel.
  * Sets up the session and subscribes to events once.
  */
-function createRunner(sandboxConfig: SandboxConfig, channelId: string, channelDir: string): AgentRunner {
+function createRunner(
+	sandboxConfig: SandboxConfig,
+	channelId: string,
+	channelDir: string,
+	modelArg?: string,
+): AgentRunner {
+	let model = resolveModel(modelArg);
 	const executor = createExecutor(sandboxConfig);
 	const workspacePath = executor.getWorkspacePath(channelDir.replace(`/${channelId}`, ""));
 
@@ -440,7 +471,7 @@ function createRunner(sandboxConfig: SandboxConfig, channelId: string, channelDi
 			tools,
 		},
 		convertToLlm,
-		getApiKey: async () => getAnthropicApiKey(authStorage),
+		getApiKey: async () => getApiKeyForModel(authStorage, model),
 	});
 
 	// Load existing messages
@@ -858,6 +889,15 @@ function createRunner(sandboxConfig: SandboxConfig, channelId: string, channelDi
 
 		abort(): void {
 			session.abort();
+		},
+
+		getModel(): Model<Api> {
+			return model;
+		},
+
+		setModel(newModel: Model<Api>): void {
+			model = newModel;
+			agent.setModel(newModel);
 		},
 	};
 }

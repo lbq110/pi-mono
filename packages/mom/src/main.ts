@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { join, resolve } from "path";
-import { type AgentRunner, getOrCreateRunner } from "./agent.js";
+import { type AgentRunner, getOrCreateRunner, resolveModel } from "./agent.js";
 import { downloadChannel } from "./download.js";
 import { createEventsWatcher } from "./events.js";
 import * as log from "./log.js";
@@ -20,6 +20,7 @@ interface ParsedArgs {
 	workingDir?: string;
 	sandbox: SandboxConfig;
 	downloadChannel?: string;
+	model?: string;
 }
 
 function parseArgs(): ParsedArgs {
@@ -27,6 +28,7 @@ function parseArgs(): ParsedArgs {
 	let sandbox: SandboxConfig = { type: "host" };
 	let workingDir: string | undefined;
 	let downloadChannelId: string | undefined;
+	let model: string | undefined;
 
 	for (let i = 0; i < args.length; i++) {
 		const arg = args[i];
@@ -38,6 +40,10 @@ function parseArgs(): ParsedArgs {
 			downloadChannelId = arg.slice("--download=".length);
 		} else if (arg === "--download") {
 			downloadChannelId = args[++i];
+		} else if (arg.startsWith("--model=")) {
+			model = arg.slice("--model=".length);
+		} else if (arg === "--model") {
+			model = args[++i];
 		} else if (!arg.startsWith("-")) {
 			workingDir = arg;
 		}
@@ -47,6 +53,7 @@ function parseArgs(): ParsedArgs {
 		workingDir: workingDir ? resolve(workingDir) : undefined,
 		sandbox,
 		downloadChannel: downloadChannelId,
+		model,
 	};
 }
 
@@ -64,12 +71,20 @@ if (parsedArgs.downloadChannel) {
 
 // Normal bot mode - require working dir
 if (!parsedArgs.workingDir) {
-	console.error("Usage: mom [--sandbox=host|docker:<name>] <working-directory>");
+	console.error("Usage: mom [--sandbox=host|docker:<name>] [--model=provider:model] <working-directory>");
 	console.error("       mom --download <channel-id>");
+	console.error("");
+	console.error("Models:");
+	console.error("  --model=anthropic:claude-sonnet-4-6    (default)");
+	console.error("  --model=minimax:MiniMax-M2.5");
 	process.exit(1);
 }
 
-const { workingDir, sandbox } = { workingDir: parsedArgs.workingDir, sandbox: parsedArgs.sandbox };
+const {
+	workingDir,
+	sandbox,
+	model: modelArg,
+} = { workingDir: parsedArgs.workingDir, sandbox: parsedArgs.sandbox, model: parsedArgs.model };
 
 if (!MOM_SLACK_APP_TOKEN || !MOM_SLACK_BOT_TOKEN) {
 	console.error("Missing env: MOM_SLACK_APP_TOKEN, MOM_SLACK_BOT_TOKEN");
@@ -98,7 +113,7 @@ function getState(channelId: string): ChannelState {
 		const channelDir = join(workingDir, channelId);
 		state = {
 			running: false,
-			runner: getOrCreateRunner(sandbox, channelId, channelDir),
+			runner: getOrCreateRunner(sandbox, channelId, channelDir, modelArg),
 			store: new ChannelStore({ workingDir, botToken: MOM_SLACK_BOT_TOKEN! }),
 			stopRequested: false,
 		};
@@ -248,6 +263,29 @@ const handler: MomHandler = {
 			state.stopMessageTs = ts; // Save for updating later
 		} else {
 			await slack.postMessage(channelId, "_Nothing running_");
+		}
+	},
+
+	handleModel(channelId: string, newModelArg?: string): string {
+		const MODEL_ALIASES: Record<string, string> = {
+			mini: "minimax:MiniMax-M2.5",
+			cc: "anthropic:claude-sonnet-4-6",
+		};
+
+		const state = getState(channelId);
+		if (!newModelArg) {
+			const current = state.runner.getModel();
+			return `_Current model: ${current.provider}:${current.id}\nAliases: ${Object.entries(MODEL_ALIASES)
+				.map(([k, v]) => `\`${k}\` = ${v}`)
+				.join(", ")}_`;
+		}
+		const resolved = MODEL_ALIASES[newModelArg.toLowerCase()] || newModelArg;
+		try {
+			const newModel = resolveModel(resolved);
+			state.runner.setModel(newModel);
+			return `_Switched to ${newModel.provider}:${newModel.id}_`;
+		} catch (err) {
+			return `_Error: ${err instanceof Error ? err.message : String(err)}_`;
 		}
 	},
 

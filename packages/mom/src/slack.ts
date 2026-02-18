@@ -83,6 +83,13 @@ export interface MomHandler {
 	 * Called when user says "stop" while mom is running
 	 */
 	handleStop(channelId: string, slack: SlackBot): Promise<void>;
+
+	/**
+	 * Handle model command (SYNC)
+	 * Called when user says "model" or "model provider:id"
+	 * Returns a status message to post.
+	 */
+	handleModel(channelId: string, modelArg?: string): string;
 }
 
 // ============================================================================
@@ -319,6 +326,16 @@ export class SlackBot {
 				return;
 			}
 
+			// Check for model command
+			const trimmedText = slackEvent.text.toLowerCase().trim();
+			if (trimmedText === "model" || trimmedText.startsWith("model ")) {
+				const modelArg = trimmedText === "model" ? undefined : slackEvent.text.trim().slice(6).trim();
+				const result = this.handler.handleModel(e.channel, modelArg);
+				this.postMessage(e.channel, result);
+				ack();
+				return;
+			}
+
 			// SYNC: Check if busy
 			if (this.handler.isRunning(e.channel)) {
 				this.postMessage(e.channel, "_Already working. Say `@mom stop` to cancel._");
@@ -394,6 +411,16 @@ export class SlackBot {
 					} else {
 						this.postMessage(e.channel, "_Nothing running_");
 					}
+					ack();
+					return;
+				}
+
+				// Check for model command
+				const trimmedDmText = slackEvent.text.toLowerCase().trim();
+				if (trimmedDmText === "model" || trimmedDmText.startsWith("model ")) {
+					const modelArg = trimmedDmText === "model" ? undefined : slackEvent.text.trim().slice(6).trim();
+					const result = this.handler.handleModel(e.channel, modelArg);
+					this.postMessage(e.channel, result);
 					ack();
 					return;
 				}
