@@ -587,6 +587,29 @@ async function loadModelsDevData(): Promise<Model<any>[]> {
 			}
 		}
 
+		// Static fallback for Minimax models
+		const MINIMAX_BASE_URL = "https://api.minimax.io/anthropic";
+		const minimaxModels: Model<"anthropic-messages">[] = [
+			{
+				id: "abab6.5s-chat",
+				name: "abab6.5s-chat",
+				api: "anthropic-messages",
+				provider: "minimax",
+				baseUrl: MINIMAX_BASE_URL,
+				reasoning: true,
+				input: ["text"],
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+				contextWindow: 16000,
+				maxTokens: 4096,
+			},
+		];
+		// Only add if not already present from models.dev
+		for (const model of minimaxModels) {
+			if (!models.some(m => m.provider === "minimax" && m.id === model.id)) {
+				models.push(model);
+			}
+		}
+
 		// Process Kimi For Coding models
 		if (data["kimi-for-coding"]?.models) {
 			for (const [modelId, model] of Object.entries(data["kimi-for-coding"].models)) {
@@ -652,8 +675,8 @@ async function generateModels() {
 		if ((candidate.provider === "anthropic" || candidate.provider === "opencode") && candidate.id === "claude-opus-4-6") {
 			candidate.contextWindow = 200000;
 		}
-		// opencode lists Claude Sonnet 4/4.5 with 1M context, actual limit is 200K
-		if (candidate.provider === "opencode" && (candidate.id === "claude-sonnet-4-5" || candidate.id === "claude-sonnet-4")) {
+		// opencode lists Claude Sonnet 4/4.5/4.6 with 1M context, actual limit is 200K
+		if (candidate.provider === "opencode" && (candidate.id === "claude-sonnet-4-5" || candidate.id === "claude-sonnet-4" || candidate.id === "claude-sonnet-4-6")) {
 			candidate.contextWindow = 200000;
 		}
 	}

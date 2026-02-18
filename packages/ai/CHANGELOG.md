@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added Claude Sonnet 4.6 model across all providers (anthropic, bedrock, opencode, github-copilot, openrouter, vercel-ai-gateway)
+
 ## [0.52.9] - 2026-02-08
 
 ### Changed
