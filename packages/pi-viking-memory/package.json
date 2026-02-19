@@ -1,0 +1,44 @@
+{
+	"name": "@mariozechner/pi-viking-memory",
+	"version": "0.52.9",
+	"description": "OpenViking persistent memory extension for pi-mono coding agent",
+	"type": "module",
+	"main": "./src/index.ts",
+	"scripts": {
+		"clean": "rm -rf dist",
+		"test": "vitest --run",
+		"test:coverage": "vitest --run --coverage"
+	},
+	"dependencies": {
+		"@sinclair/typebox": "*"
+	},
+	"peerDependencies": {
+		"@mariozechner/pi-coding-agent": "*"
+	},
+	"devDependencies": {
+		"@mariozechner/pi-coding-agent": "*",
+		"@types/node": "^24.3.0",
+		"@vitest/coverage-v8": "^3.0.0",
+		"vitest": "^3.2.4"
+	},
+	"keywords": [
+		"pi-mono",
+		"extension",
+		"openviking",
+		"memory",
+		"agent"
+	],
+	"author": "Mario Zechner",
+	"license": "MIT",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/badlogic/pi-mono.git",
+		"directory": "packages/pi-viking-memory"
+	},
+	"engines": {
+		"node": ">=20.0.0"
+	},
+	"pi": {
+		"extensions": ["src/index.ts"]
+	}
+}

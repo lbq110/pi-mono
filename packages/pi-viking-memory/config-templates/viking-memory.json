@@ -1,0 +1,14 @@
+{
+  "openviking": {
+    "baseUrl": "http://localhost:1933",
+    "apiKey": null,
+    "timeout": 10000
+  },
+  "behavior": {
+    "autoSyncMessages": true,
+    "autoCommitOnShutdown": true
+  },
+  "prompts": {
+    "injectMemorySystemPrompt": true
+  }
+}
