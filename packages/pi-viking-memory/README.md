@@ -1,6 +1,6 @@
 # @mariozechner/pi-viking-memory
 
-A [pi-mono](https://github.com/badlogic/pi-mono) extension that gives the coding agent persistent long-term memory via [OpenViking](https://github.com/OpenViking/OpenViking).
+A [pi-mono](https://github.com/badlogic/pi-mono) extension that gives the coding agent persistent long-term memory via [OpenViking](https://github.com/volcengine/openviking).
 
 Memory persists **across sessions**. The agent can recall preferences, past decisions, and project context from any previous conversation.
 
@@ -38,23 +38,18 @@ Pi-mono Agent
 
 ### 1. Install and start OpenViking
 
-OpenViking must be built from source (requires Go and CMake):
+OpenViking must be built from source. Requires **Go** and **CMake** (e.g. `brew install go cmake` on macOS).
 
 ```bash
-git clone https://github.com/OpenViking/OpenViking
-cd OpenViking
+git clone https://github.com/volcengine/openviking
+cd openviking
 
-# Build AGFS server (requires Go)
-cd third_party/agfs/agfs-server
-go build -o build/agfs-server cmd/server/main.go
-cp build/agfs-server ../../../openviking/bin/
-cd ../../..
-
-# Install Python package
 uv venv .venv
 uv pip install setuptools pybind11 cmake
-uv pip install -e . --no-build-isolation
+uv pip install -e "."
 ```
+
+The build step compiles an AGFS server binary (Go) and a C++ vector index extension (CMake). Both are built automatically by `pip install`.
 
 Create a config file at `~/.openviking/ov.conf`. Example using Gemini (fully tested):
 
