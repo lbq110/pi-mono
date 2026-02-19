@@ -1,111 +1,207 @@
-# pi-viking-memory
+# @mariozechner/pi-viking-memory
 
-A [pi-mono](https://github.com/badlogic/pi-mono) extension that gives the coding agent persistent long-term memory via [OpenViking](https://github.com/OpenViking).
+A [pi-mono](https://github.com/badlogic/pi-mono) extension that gives the coding agent persistent long-term memory via [OpenViking](https://github.com/OpenViking/OpenViking).
 
-## Architecture
+Memory persists **across sessions**. The agent can recall preferences, past decisions, and project context from any previous conversation.
+
+## How it works
+
+OpenViking is exposed as **four LLM-callable tools** — the agent decides when to use them. Two passive hooks handle transparent background sync.
 
 ```
 Pi-mono Agent
      │
      ├── Active tools (LLM decides when to call)
-     │     ├── recall_memory(query, scope?)  → POST /api/v1/search/find
-     │     ├── save_memory(content)          → POST /api/v1/sessions/{id}/messages
-     │     ├── explore_memory(uri)           → GET  /api/v1/fs/ls
-     │     └── add_knowledge(path)           → POST /api/v1/resources
+     │     ├── recall_memory(query, scope?)  → semantic search over past sessions
+     │     ├── save_memory(content)          → explicitly persist a note
+     │     ├── explore_memory(uri)           → browse the memory filesystem
+     │     └── add_knowledge(path)           → index a local file/directory
      │
-     └── Passive hooks (transparent, automatic)
-           ├── before_agent_start  → ensureSession + inject system prompt
-           ├── session_compact     → syncMessages + commitSession
-           └── session_shutdown    → syncMessages + commitSession
-                                          │
-                               OpenViking HTTP API (localhost:1933)
-                               Independent process, always running
+     └── Passive hooks (transparent, no LLM involvement)
+           ├── before_agent_start  → create OV session, inject memory prompt
+           ├── session_compact     → sync messages + commit (extract memories)
+           └── session_shutdown    → sync messages + commit (extract memories)
+                                           │
+                                   OpenViking HTTP API (localhost:1933)
+                                   Independent Python process
 ```
+
+**Three-layer memory model:**
+
+| Layer | Who decides | When |
+|-------|-------------|------|
+| Message sync | Automatic hook | On compact / shutdown — conversation appended to OV session |
+| Memory extraction | OV internal LLM pipeline | On commit — extracts preferences, entities, cases from conversation |
+| Explicit recall/save | Agent LLM | When `recall_memory` / `save_memory` tools are called |
 
 ## Setup
 
-### 1. Start OpenViking
+### 1. Install and start OpenViking
+
+OpenViking must be built from source (requires Go and CMake):
 
 ```bash
-pip install openviking
-mkdir -p ~/.openviking
-cp config-templates/ov.conf ~/.openviking/ov.conf
-# Edit ~/.openviking/ov.conf — add your API keys
+git clone https://github.com/OpenViking/OpenViking
+cd OpenViking
 
-openviking serve --config ~/.openviking/ov.conf &
+# Build AGFS server (requires Go)
+cd third_party/agfs/agfs-server
+go build -o build/agfs-server cmd/server/main.go
+cp build/agfs-server ../../../openviking/bin/
+cd ../../..
+
+# Install Python package
+uv venv .venv
+uv pip install setuptools pybind11 cmake
+uv pip install -e . --no-build-isolation
+```
+
+Create a config file at `~/.openviking/ov.conf`. Example using Gemini (fully tested):
+
+```json
+{
+  "storage": {
+    "vectordb": { "backend": "local", "path": "~/.openviking/data" },
+    "agfs":     { "backend": "local", "path": "~/.openviking/data", "port": 1833 }
+  },
+  "embedding": {
+    "dense": {
+      "provider": "openai",
+      "model": "models/gemini-embedding-001",
+      "api_key": "<your-gemini-api-key>",
+      "api_base": "https://generativelanguage.googleapis.com/v1beta/openai/",
+      "dimension": 3072
+    }
+  },
+  "vlm": {
+    "model": "gemini-2.0-flash",
+    "provider": "gemini",
+    "providers": {
+      "gemini": { "api_key": "<your-gemini-api-key>" }
+    }
+  }
+}
+```
+
+Start the server:
+
+```bash
+.venv/bin/openviking serve --config ~/.openviking/ov.conf &
 ```
 
 ### 2. Configure the extension
 
 ```bash
 mkdir -p ~/.pi
-cp config-templates/viking-memory.json ~/.pi/viking-memory.json
+cp packages/pi-viking-memory/config-templates/viking-memory.json ~/.pi/viking-memory.json
 ```
 
-### 3. Install the extension
-
-```bash
-# Option A: point pi directly at the source (jiti handles TypeScript)
-pi -e /path/to/pi-viking-memory/src/index.ts
-
-# Option B: copy to the global extensions directory
-cp src/index.ts ~/.pi/agent/extensions/viking-memory.ts
-# and also copy the other source files next to it:
-cp -r src/* ~/.pi/agent/extensions/viking-memory/
-```
-
-> **Note on Option B**: Because this extension spans multiple files, you need all
-> files available. The easiest approach is to use `pi -e` with the full path.
-
-## Tools
-
-### `recall_memory`
-```
-recall_memory(query: string, scope?: "preferences"|"entities"|"cases"|"all", limit?: number)
-```
-Searches long-term memory semantically. Use proactively when prior context may be relevant.
-
-### `save_memory`
-```
-save_memory(content: string)
-```
-Explicitly saves a note to memory. Gets extracted by OV's memory pipeline on session commit.
-
-### `explore_memory`
-```
-explore_memory(uri: string)
-```
-Lists a Viking URI directory. Start with `viking://user/memories/`.
-
-### `add_knowledge`
-```
-add_knowledge(path: string, reason?: string, instruction?: string)
-```
-Indexes a local file or directory for semantic search.
-
-## Verification
-
-1. **Session 1**: Tell the agent "I prefer 4-space indentation". Close pi (triggers commit).
-2. **Session 2**: Run `recall_memory("code style preferences")` → should find the preference.
-
-## Configuration
-
-`~/.pi/viking-memory.json`:
+`~/.pi/viking-memory.json` defaults:
 
 | Key | Default | Description |
 |-----|---------|-------------|
 | `openviking.baseUrl` | `http://localhost:1933` | OpenViking server URL |
-| `openviking.apiKey` | `null` | API key (if OV is configured with auth) |
+| `openviking.apiKey` | `null` | API key (if OV auth is enabled) |
 | `openviking.timeout` | `10000` | HTTP timeout in ms |
 | `behavior.autoSyncMessages` | `true` | Sync messages on session_compact |
 | `behavior.autoCommitOnShutdown` | `true` | Commit on session_shutdown |
 | `prompts.injectMemorySystemPrompt` | `true` | Append memory capabilities to system prompt |
 
+### 3. Install the extension
+
+The extension spans multiple files, so symlink the whole package directory:
+
+```bash
+mkdir -p ~/.pi/agent/extensions
+ln -sfn /path/to/pi-mono/packages/pi-viking-memory \
+        ~/.pi/agent/extensions/viking-memory
+```
+
+pi's extension loader reads the `pi.extensions` field in `package.json` and loads `src/index.ts` via jiti (no compilation needed).
+
+To verify the extension loaded, run:
+
+```bash
+pi --print "list all available tools"
+# Should show: recall_memory, save_memory, explore_memory, add_knowledge
+```
+
+## Tools
+
+### `recall_memory`
+
+```
+recall_memory(query: string, scope?: "preferences"|"entities"|"cases"|"all", limit?: number)
+```
+
+Semantically searches long-term memory. The agent should call this proactively when historical context may be relevant.
+
+Scopes map to Viking URI prefixes:
+
+| scope | searches in |
+|-------|-------------|
+| `preferences` | `viking://user/memories/preferences/` |
+| `entities` | `viking://user/memories/entities/` |
+| `cases` | `viking://user/memories/cases/` |
+| `all` (default) | `viking://user/memories/` |
+
+### `save_memory`
+
+```
+save_memory(content: string)
+```
+
+Appends a note to the current OV session as an assistant message. On session commit, OV's LLM pipeline extracts it into the appropriate memory category.
+
+### `explore_memory`
+
+```
+explore_memory(uri: string)
+```
+
+Lists a Viking URI directory. Start with `viking://user/memories/` to see all memory categories.
+
+### `add_knowledge`
+
+```
+add_knowledge(path: string, reason?: string, instruction?: string)
+```
+
+Indexes a local file or directory into OV's knowledge base for future semantic search. Useful for project docs, README files, API specs, etc.
+
+## Verification
+
+```
+# Session 1
+> I prefer 4-space indentation and TypeScript strict mode.
+  Please save this to memory.
+→ Agent calls save_memory(...)
+→ Close pi  (triggers session_shutdown → commit → memory extracted)
+
+# Session 2 (fresh process, no context)
+> recall_memory("code style preferences")
+→ Returns: "4-space indentation, TypeScript strict mode"
+```
+
+## Graceful degradation
+
+If OpenViking is not running, **pi-mono is completely unaffected**:
+
+- `health()` fails → `before_agent_start` silently skips session creation and prompt injection
+- Tool calls fail → return a descriptive error string, no exceptions thrown
+- Lifecycle hooks → all errors are swallowed silently
+
 ## Development
 
 ```bash
+# From pi-mono root
 npm install
-npm run typecheck
-npm test
-npm run test:coverage  # requires >=80% coverage
+
+# Run tests
+npm test --workspace packages/pi-viking-memory
+
+# Lint + type check (monorepo-wide)
+npm run check
 ```
+
+Tests use vitest with mocked fetch. 42 tests covering OVClient, SessionManager, and all four tools.
