@@ -325,7 +325,7 @@ export const MODELS = {
 				cacheRead: 0.5,
 				cacheWrite: 6.25,
 			},
-			contextWindow: 200000,
+			contextWindow: 1000000,
 			maxTokens: 128000,
 		} satisfies Model<"bedrock-converse-stream">,
 		"anthropic.claude-sonnet-4-20250514-v1:0": {
@@ -512,7 +512,7 @@ export const MODELS = {
 				cacheRead: 0.5,
 				cacheWrite: 6.25,
 			},
-			contextWindow: 200000,
+			contextWindow: 1000000,
 			maxTokens: 128000,
 		} satisfies Model<"bedrock-converse-stream">,
 		"eu.anthropic.claude-sonnet-4-20250514-v1:0": {
@@ -614,7 +614,7 @@ export const MODELS = {
 				cacheRead: 0.5,
 				cacheWrite: 6.25,
 			},
-			contextWindow: 200000,
+			contextWindow: 1000000,
 			maxTokens: 128000,
 		} satisfies Model<"bedrock-converse-stream">,
 		"global.anthropic.claude-sonnet-4-20250514-v1:0": {
@@ -1294,7 +1294,7 @@ export const MODELS = {
 				cacheRead: 0.5,
 				cacheWrite: 6.25,
 			},
-			contextWindow: 200000,
+			contextWindow: 1000000,
 			maxTokens: 128000,
 		} satisfies Model<"bedrock-converse-stream">,
 		"us.anthropic.claude-sonnet-4-20250514-v1:0": {
@@ -1721,7 +1721,7 @@ export const MODELS = {
 				cacheRead: 0.5,
 				cacheWrite: 6.25,
 			},
-			contextWindow: 200000,
+			contextWindow: 1000000,
 			maxTokens: 128000,
 		} satisfies Model<"anthropic-messages">,
 		"claude-sonnet-4-0": {
@@ -5645,7 +5645,7 @@ export const MODELS = {
 				cacheRead: 0.5,
 				cacheWrite: 6.25,
 			},
-			contextWindow: 200000,
+			contextWindow: 1000000,
 			maxTokens: 128000,
 		} satisfies Model<"anthropic-messages">,
 		"claude-sonnet-4": {
