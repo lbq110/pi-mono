@@ -1,6 +1,6 @@
 # @mariozechner/pi-viking-memory
 
-A [pi-mono](https://github.com/badlogic/pi-mono) extension that gives the coding agent persistent long-term memory via [OpenViking](https://github.com/volcengine/openviking).
+A [pi-mono](https://github.com/badlogic/pi-mono) extension that gives the coding agent persistent long-term memory via [OpenViking](https://github.com/lbq110/OpenViking).
 
 Memory persists **across sessions**. The agent can recall preferences, past decisions, and project context from any previous conversation.
 
@@ -41,7 +41,7 @@ Pi-mono Agent
 OpenViking must be built from source. Requires **Go** and **CMake** (e.g. `brew install go cmake` on macOS).
 
 ```bash
-git clone https://github.com/volcengine/openviking
+git clone https://github.com/lbq110/OpenViking
 cd openviking
 
 uv venv .venv
