@@ -376,7 +376,7 @@ export const MODELS = {
 				cacheRead: 0.3,
 				cacheWrite: 3.75,
 			},
-			contextWindow: 200000,
+			contextWindow: 1000000,
 			maxTokens: 64000,
 		} satisfies Model<"bedrock-converse-stream">,
 		"cohere.command-r-plus-v1:0": {
@@ -563,7 +563,7 @@ export const MODELS = {
 				cacheRead: 0.3,
 				cacheWrite: 3.75,
 			},
-			contextWindow: 200000,
+			contextWindow: 1000000,
 			maxTokens: 64000,
 		} satisfies Model<"bedrock-converse-stream">,
 		"global.anthropic.claude-haiku-4-5-20251001-v1:0": {
@@ -665,7 +665,7 @@ export const MODELS = {
 				cacheRead: 0.3,
 				cacheWrite: 3.75,
 			},
-			contextWindow: 200000,
+			contextWindow: 1000000,
 			maxTokens: 64000,
 		} satisfies Model<"bedrock-converse-stream">,
 		"google.gemma-3-27b-it": {
@@ -1345,7 +1345,7 @@ export const MODELS = {
 				cacheRead: 0.3,
 				cacheWrite: 3.75,
 			},
-			contextWindow: 200000,
+			contextWindow: 1000000,
 			maxTokens: 64000,
 		} satisfies Model<"bedrock-converse-stream">,
 		"writer.palmyra-x4-v1:0": {
@@ -1806,7 +1806,7 @@ export const MODELS = {
 				cacheRead: 0.3,
 				cacheWrite: 3.75,
 			},
-			contextWindow: 200000,
+			contextWindow: 1000000,
 			maxTokens: 64000,
 		} satisfies Model<"anthropic-messages">,
 	},
@@ -5696,7 +5696,7 @@ export const MODELS = {
 				cacheRead: 0.3,
 				cacheWrite: 3.75,
 			},
-			contextWindow: 200000,
+			contextWindow: 1000000,
 			maxTokens: 64000,
 		} satisfies Model<"anthropic-messages">,
 		"gemini-3-flash": {
@@ -9032,23 +9032,6 @@ export const MODELS = {
 			},
 			contextWindow: 40960,
 			maxTokens: 40960,
-		} satisfies Model<"openai-completions">,
-		"qwen/qwen3-4b": {
-			id: "qwen/qwen3-4b",
-			name: "Qwen: Qwen3 4B",
-			api: "openai-completions",
-			provider: "openrouter",
-			baseUrl: "https://openrouter.ai/api/v1",
-			reasoning: true,
-			input: ["text"],
-			cost: {
-				input: 0.0715,
-				output: 0.273,
-				cacheRead: 0,
-				cacheWrite: 0,
-			},
-			contextWindow: 131072,
-			maxTokens: 8192,
 		} satisfies Model<"openai-completions">,
 		"qwen/qwen3-4b:free": {
 			id: "qwen/qwen3-4b:free",

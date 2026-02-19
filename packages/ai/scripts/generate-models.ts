@@ -675,9 +675,14 @@ async function generateModels() {
 		if ((candidate.provider === "anthropic" || candidate.provider === "opencode") && candidate.id === "claude-opus-4-6") {
 			candidate.contextWindow = 200000;
 		}
-		// opencode lists Claude Sonnet 4/4.5/4.6 with 1M context, actual limit is 200K
-		if (candidate.provider === "opencode" && (candidate.id === "claude-sonnet-4-5" || candidate.id === "claude-sonnet-4" || candidate.id === "claude-sonnet-4-6")) {
+		// opencode lists Claude Sonnet 4/4.5 with 1M context, actual limit is 200K
+		// Sonnet 4.6 genuinely supports 1M context (tiered pricing: standard up to 200K, higher rate beyond)
+		if (candidate.provider === "opencode" && (candidate.id === "claude-sonnet-4-5" || candidate.id === "claude-sonnet-4")) {
 			candidate.contextWindow = 200000;
+		}
+		// Anthropic provider reports 200K for sonnet-4-6 but actual limit is 1M (same as opencode)
+		if ((candidate.provider === "anthropic" || candidate.provider === "amazon-bedrock") && candidate.id.includes("sonnet-4-6")) {
+			candidate.contextWindow = 1000000;
 		}
 	}
 
