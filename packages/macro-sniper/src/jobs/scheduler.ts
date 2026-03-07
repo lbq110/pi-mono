@@ -112,26 +112,13 @@ export function startScheduler(streamText: (prompt: string, model: string) => Pr
 
 	const timezone = "America/New_York";
 
-	// Daily full pipeline at 06:00 ET
-	scheduledTasks.push(
-		cron.schedule(
-			"0 6 * * *",
-			async () => {
-				log.info("Running scheduled full pipeline (06:00 ET)");
-				await runFullPipeline(streamText);
-			},
-			{ timezone },
-		),
-	);
-
-	// Liquidity collection at 08:00 ET
+	// Daily full pipeline at 08:00 ET (collect → analyze → report → notify)
 	scheduledTasks.push(
 		cron.schedule(
 			"0 8 * * *",
 			async () => {
-				const config = loadConfig();
-				const db = getDb();
-				await collectLiquidity(db, config.FRED_API_KEY);
+				log.info("Running scheduled full pipeline (08:00 ET)");
+				await runFullPipeline(streamText);
 			},
 			{ timezone },
 		),
