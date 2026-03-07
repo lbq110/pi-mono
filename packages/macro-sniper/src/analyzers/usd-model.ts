@@ -227,20 +227,59 @@ function computeRateSupport(
 }
 
 /**
- * Compute π_risk score: risk premium pressure on USD.
- * Higher risk premium → LOWER score → bearish USD.
- * Returns 0-100 where 100 = low risk (bullish), 0 = high risk (bearish).
+ * Compute π_risk score: risk premium impact on USD.
+ * Returns 0-100 where 100 = risk environment favors USD, 0 = risk hurts USD.
+ *
+ * Key distinction: the SOURCE of risk matters.
+ * - Global risk (VIX high + term premium low/stable) → flight to safety → USD bullish
+ * - US-specific risk (VIX high + term premium high) → fiscal/policy fear → USD bearish
+ * - Calm markets (VIX low + term premium low) → carry trade, neutral for USD
+ *
+ * Term premium (ACM model) captures compensation for holding long-duration US debt.
+ * When it rises due to fiscal deficit concerns or policy uncertainty, it signals
+ * that investors are demanding MORE compensation to hold USTs — bearish for USD.
+ * But VIX alone rising (without term premium) suggests global risk aversion,
+ * which historically drives capital INTO USD (safe haven).
  */
 function computeRiskPremium(termPremium: number | null, vix: number | null): number {
-	// Term premium: high = bad for USD (fiscal/policy risk)
-	const tpScore =
-		termPremium != null ? 100 - normalize(termPremium * 100, USD_TERM_PREMIUM_LOW, USD_TERM_PREMIUM_HIGH) : 50;
+	if (termPremium == null && vix == null) return 50;
 
-	// VIX: moderate VIX can be USD bullish (flight to safety)
-	// But very high VIX from US policy risk = bearish
-	const vixScore = vix != null ? 100 - normalize(vix, USD_VIX_LOW, USD_VIX_HIGH) : 50;
+	// Normalize inputs
+	const tpBps = termPremium != null ? termPremium * 100 : null; // convert to bps
+	const tpNorm = tpBps != null ? normalize(tpBps, USD_TERM_PREMIUM_LOW, USD_TERM_PREMIUM_HIGH) : null; // 0=low, 100=high
+	const vixNorm = vix != null ? normalize(vix, USD_VIX_LOW, USD_VIX_HIGH) : null; // 0=calm, 100=panic
 
-	return clamp(tpScore * 0.6 + vixScore * 0.4);
+	// Case analysis based on VIX × term premium interaction
+	if (vixNorm != null && tpNorm != null) {
+		const vixHigh = vixNorm > 60;
+		const tpHigh = tpNorm > 60;
+
+		if (vixHigh && !tpHigh) {
+			// Global risk, NOT US-specific → flight to safety → bullish USD
+			// Higher VIX = more flight to safety = higher score
+			return clamp(55 + vixNorm * 0.3);
+		}
+		if (vixHigh && tpHigh) {
+			// Both elevated → US-specific risk (fiscal/policy) → bearish USD
+			// The higher both are, the worse for USD
+			return clamp(50 - (vixNorm + tpNorm) * 0.25);
+		}
+		if (!vixHigh && tpHigh) {
+			// Term premium high but markets calm → structural fiscal concern
+			// Moderately bearish for USD
+			return clamp(45 - tpNorm * 0.15);
+		}
+		// Both low → calm environment, slightly positive (stable USD)
+		return clamp(55 + (100 - tpNorm) * 0.1);
+	}
+
+	// Fallback: only one input available
+	if (tpNorm != null) {
+		// High term premium = fiscal risk = bearish
+		return clamp(70 - tpNorm * 0.4);
+	}
+	// VIX only: assume global risk → mild USD positive (flight to safety)
+	return clamp(50 + (vixNorm! - 50) * 0.2);
 }
 
 /**
