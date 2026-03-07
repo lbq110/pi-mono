@@ -14,7 +14,16 @@ const log = createChildLogger("collector");
  * - T10YIE:     10Y breakeven inflation rate
  * - T10Y3M:     10Y-3M spread (yield curve slope)
  */
-const USD_MODEL_FRED_SERIES = ["THREEFYTP10", "THREEFYTP2", "T5YIE", "T10YIE", "T10Y3M"] as const;
+const USD_MODEL_FRED_SERIES = [
+	"THREEFYTP10", // 10Y term premium (ACM model)
+	"THREEFYTP2", //  2Y term premium
+	"T5YIE", //       5Y breakeven inflation rate
+	"T10YIE", //      10Y breakeven inflation rate
+	"T10Y3M", //      10Y-3M spread (yield curve slope)
+	"ECBMRRFR", //    ECB main refinancing rate (daily)
+	"IUDSOIA", //     SONIA - UK overnight rate (daily)
+	"IRSTCI01JPM156N", // BOJ call money rate (monthly)
+] as const;
 
 /**
  * Collect all data needed for the USD valuation model:

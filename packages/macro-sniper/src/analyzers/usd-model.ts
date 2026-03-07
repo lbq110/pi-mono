@@ -23,10 +23,16 @@ interface UsdModelMetadata {
 	dxy: number | null;
 	dxy_change_pct: number | null;
 
-	// r_f: Rate support
+	// r_f: Rate differential support
 	fed_funds_rate: number | null;
+	ecb_rate: number | null;
+	boj_rate: number | null;
+	sonia_rate: number | null;
+	fed_ecb_diff: number | null;
+	fed_boj_diff: number | null;
 	dgs2: number | null;
 	dgs10: number | null;
+	real_rate_10y: number | null;
 	rate_support_score: number;
 
 	// π_risk: Risk premium
@@ -156,15 +162,68 @@ function getLatestVix(db: Db, since: string): number | null {
 
 /**
  * Compute r_f score: interest rate differential support for USD.
- * Higher US rates vs peers → higher score → bullish USD.
+ *
+ * Based on ACTUAL differentials vs major central bank peers:
+ *   - Fed vs ECB (EUR weight ~57% in DXY)
+ *   - Fed vs BOJ (JPY weight ~14% in DXY)
+ *   - Fed vs BOE/SONIA (GBP weight ~12% in DXY)
+ *
+ * Also factors in the real rate (DGS10 - T10YIE) as a measure of
+ * capital flow attractiveness, and the 2Y-Fed spread as a measure
+ * of the market's rate path pricing (negative = market pricing cuts).
  */
-function computeRateSupport(fedRate: number | null, dgs2: number | null): number {
-	if (fedRate == null || dgs2 == null) return 50;
-	// Fed rate 4-5% range is strong support; below 2% is weak
-	const fedScore = normalize(fedRate, 1.0, 5.5);
-	// 2Y yield as market pricing of rate path
-	const yieldScore = normalize(dgs2, 1.0, 5.5);
-	return clamp((fedScore + yieldScore) / 2);
+function computeRateSupport(
+	fedRate: number | null,
+	dgs2: number | null,
+	ecbRate: number | null,
+	bojRate: number | null,
+	soniaRate: number | null,
+	realRate: number | null,
+): number {
+	// 1. Weighted rate differential vs peers (DXY weights approximate)
+	let diffScore = 50;
+	let totalWeight = 0;
+
+	if (fedRate != null) {
+		// vs ECB (~57% of DXY)
+		if (ecbRate != null) {
+			const diff = fedRate - ecbRate;
+			// 0 bps diff = neutral(50), +300bps = very strong(90), -100bps = weak(20)
+			diffScore += normalize(diff, -1.0, 3.0) * 0.57 - 50 * 0.57;
+			totalWeight += 0.57;
+		}
+		// vs BOJ (~14% of DXY)
+		if (bojRate != null) {
+			const diff = fedRate - bojRate;
+			diffScore += normalize(diff, 0, 5.0) * 0.14 - 50 * 0.14;
+			totalWeight += 0.14;
+		}
+		// vs BOE/SONIA (~12% of DXY)
+		if (soniaRate != null) {
+			const diff = fedRate - soniaRate;
+			diffScore += normalize(diff, -1.0, 3.0) * 0.12 - 50 * 0.12;
+			totalWeight += 0.12;
+		}
+	}
+
+	// If no peer data, fall back to absolute level
+	if (totalWeight < 0.1 && fedRate != null) {
+		diffScore = normalize(fedRate, 1.0, 5.5);
+	}
+
+	// 2. Real rate attractiveness (20% of score)
+	const realRateScore = realRate != null ? normalize(realRate, -0.5, 2.5) : 50;
+
+	// 3. Rate path signal: 2Y vs Fed (20% of score)
+	// If 2Y < Fed → market pricing cuts → bearish for USD
+	// If 2Y > Fed → market pricing hikes → bullish for USD
+	let pathScore = 50;
+	if (fedRate != null && dgs2 != null) {
+		const pathSpread = dgs2 - fedRate;
+		pathScore = normalize(pathSpread, -1.5, 0.5);
+	}
+
+	return clamp(diffScore * 0.6 + realRateScore * 0.2 + pathScore * 0.2);
 }
 
 /**
@@ -367,13 +426,21 @@ export function analyzeUsdModel(db: Db, date: string): void {
 
 	const vix = getLatestVix(db, since) ?? getLatestYield(db, "VIXCLS", since);
 
+	// Peer central bank rates for differential calculation
+	const ecbRate = getLatestYield(db, "ECBMRRFR", since);
+	const soniaRate = getLatestYield(db, "IUDSOIA", since);
+	const bojRate = getLatestYield(db, "IRSTCI01JPM156N", sinceMonthly); // monthly, wider lookback
+
+	// Real rate = 10Y nominal - 10Y BEI (used for rate support scoring)
+	const realRate10y = dgs10 != null && bei10y != null ? dgs10 - bei10y : null;
+
 	// Check stale
 	if (dxy == null) staleSources.push("DXY");
 	if (tp10y == null) staleSources.push("term_premium");
 	if (bei10y == null) staleSources.push("BEI");
 
 	// Factor scores
-	const rateScore = computeRateSupport(fedRate, dgs2);
+	const rateScore = computeRateSupport(fedRate, dgs2, ecbRate, bojRate, soniaRate, realRate10y);
 	const riskScore = computeRiskPremium(tp10y, vix);
 	const cyScore = computeConvenienceYield(bei5y, bei10y, dxy);
 	const hedgeScore = computeHedgeEfficiency(dxyChange, rateScore);
@@ -408,8 +475,14 @@ export function analyzeUsdModel(db: Db, date: string): void {
 		dxy_change_pct: dxyChange != null ? Math.round(dxyChange * 100) / 100 : null,
 
 		fed_funds_rate: fedRate,
+		ecb_rate: ecbRate,
+		boj_rate: bojRate,
+		sonia_rate: soniaRate,
+		fed_ecb_diff: fedRate != null && ecbRate != null ? Math.round((fedRate - ecbRate) * 100) / 100 : null,
+		fed_boj_diff: fedRate != null && bojRate != null ? Math.round((fedRate - bojRate) * 100) / 100 : null,
 		dgs2,
 		dgs10,
+		real_rate_10y: realRate10y != null ? Math.round(realRate10y * 100) / 100 : null,
 		rate_support_score: Math.round(rateScore * 10) / 10,
 
 		term_premium_10y: tp10y,
