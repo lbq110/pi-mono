@@ -106,8 +106,9 @@ export const usdModelSignalMetadataSchema = z.object({
 	term_premium_10y: z.number().nullable(),
 	vix: z.number().nullable(),
 	risk_premium_score: z.number(),
-	bei_5y: z.number().nullable(),
-	bei_10y: z.number().nullable(),
+	gold_price: z.number().nullable(),
+	gold_change_pct: z.number().nullable(),
+	sofr_iorb_spread_bps: z.number().nullable(),
 	convenience_yield_score: z.number(),
 	yield_decomposition: z.object({
 		nominal_10y: z.number().nullable(),

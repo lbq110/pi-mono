@@ -4,8 +4,6 @@ import { analysisResults, fxSnapshots, liquiditySnapshots, sentimentSnapshots, y
 import { createChildLogger } from "../logger.js";
 import {
 	USD_BEARISH_THRESHOLD,
-	USD_BEI_HIGH,
-	USD_BEI_LOW,
 	USD_BULLISH_THRESHOLD,
 	USD_MODEL_WEIGHTS,
 	USD_TERM_PREMIUM_HIGH,
@@ -40,9 +38,10 @@ interface UsdModelMetadata {
 	vix: number | null;
 	risk_premium_score: number;
 
-	// cy: Convenience yield
-	bei_5y: number | null;
-	bei_10y: number | null;
+	// cy: Convenience yield (structural USD safety premium)
+	gold_price: number | null;
+	gold_change_pct: number | null;
+	sofr_iorb_spread_bps: number | null;
 	convenience_yield_score: number;
 
 	// Yield decomposition (10Y = real rate + BEI + term premium)
@@ -140,6 +139,24 @@ function getDxyOlder(db: Db, _beforeDate: string): number | null {
 		if (row.dataDate <= targetStr) return row.rate;
 	}
 	return rows[rows.length - 1]?.rate ?? null;
+}
+
+/** Get latest value from sentiment_snapshots by source + metric */
+function getLatestSentiment(db: Db, source: string, metric: string, since: string): number | null {
+	const row = db
+		.select()
+		.from(sentimentSnapshots)
+		.where(
+			and(
+				eq(sentimentSnapshots.source, source),
+				eq(sentimentSnapshots.metric, metric),
+				gte(sentimentSnapshots.dataDate, since),
+			),
+		)
+		.orderBy(desc(sentimentSnapshots.dataDate))
+		.limit(1)
+		.get();
+	return row?.value ?? null;
 }
 
 /** Get latest VIX from sentiment_snapshots (stored as source=fred, metric=VIXCLS) */
@@ -283,18 +300,69 @@ function computeRiskPremium(termPremium: number | null, vix: number | null): num
 }
 
 /**
- * Compute cy score: convenience yield / USD safety premium.
- * Higher cy → higher score → bullish USD.
+ * Compute cy score: convenience yield / USD structural safety premium.
+ * Returns 0-100 where 100 = strong convenience yield, 0 = eroding.
+ *
+ * Convenience yield reflects the non-monetary benefit of holding USD assets:
+ * - Global reserve currency status
+ * - Deepest/most liquid bond market
+ * - Trade settlement currency
+ *
+ * These are slow-moving structural factors. We approximate via:
+ * 1. Gold trend: Gold rising = de-dollarization / cy erosion
+ * 2. Funding market health: tight SOFR-IORB spread = UST collateral still valued
+ * 3. USD residual premium: the portion of DXY NOT explained by rate differentials
+ *    (if DXY is stronger than rate diffs suggest → high cy; weaker → low cy)
  */
-function computeConvenienceYield(_bei5y: number | null, bei10y: number | null, dxy: number | null): number {
-	// Stable BEI = stable inflation expectations = cy intact
-	// Very high BEI = inflation eroding USD value = cy declining
-	const beiScore = bei10y != null ? 100 - normalize(bei10y, USD_BEI_LOW, USD_BEI_HIGH) : 50;
+function computeConvenienceYield(
+	goldPrice: number | null,
+	goldPricePrev: number | null,
+	sofrIorbSpreadBps: number | null,
+	dxy: number | null,
+	rateScore: number,
+): number {
+	let score = 50;
+	let factors = 0;
 
-	// DXY level as proxy: high DXY = market still valuing USD safety
-	const dxyScore = dxy != null ? normalize(dxy, 95, 110) : 50;
+	// 1. Gold trend (40% weight): gold rising = investors fleeing USD = cy eroding
+	if (goldPrice != null && goldPricePrev != null && goldPricePrev > 0) {
+		const goldChangePct = ((goldPrice - goldPricePrev) / goldPricePrev) * 100;
+		// Gold up >5% in 7d = strong de-dollarization signal
+		// Gold flat/down = USD safety premium intact
+		const goldScore = clamp(60 - goldChangePct * 6);
+		score += (goldScore - 50) * 0.4;
+		factors++;
+	}
 
-	return clamp(beiScore * 0.5 + dxyScore * 0.5);
+	// 2. Funding market health (30% weight): SOFR-IORB spread
+	// Tight spread = USTs still valued as collateral = cy intact
+	// Wide spread = funding stress, could indicate UST losing safe-haven status
+	if (sofrIorbSpreadBps != null) {
+		// <5bps = healthy, >15bps = stress
+		const fundingScore = clamp(80 - sofrIorbSpreadBps * 3);
+		score += (fundingScore - 50) * 0.3;
+		factors++;
+	}
+
+	// 3. USD residual premium (30% weight): DXY vs what rate differentials imply
+	// If rateScore is 60 (moderate support) but DXY is high → cy is adding value
+	// If rateScore is 60 but DXY is low → cy is eroding
+	if (dxy != null) {
+		// Map rateScore to an "implied DXY" range (rough)
+		// rateScore 50 → implied DXY ~100, rateScore 70 → ~104, rateScore 30 → ~96
+		const impliedDxy = 100 + (rateScore - 50) * 0.2;
+		const residual = dxy - impliedDxy;
+		// Positive residual = DXY above rate-implied → cy contributing
+		// Negative residual = DXY below rate-implied → cy eroding
+		const residualScore = clamp(50 + residual * 3);
+		score += (residualScore - 50) * 0.3;
+		factors++;
+	}
+
+	// If no data at all, return neutral
+	if (factors === 0) return 50;
+
+	return clamp(score);
 }
 
 /**
@@ -451,7 +519,7 @@ export function analyzeUsdModel(db: Db, date: string): void {
 	const dgs2 = getLatestYield(db, "DGS2", since);
 	const dgs10 = getLatestYield(db, "DGS10", since);
 	const tp10y = getLatestYield(db, "THREEFYTP10", since);
-	const bei5y = getLatestYield(db, "T5YIE", since);
+	const _bei5y = getLatestYield(db, "T5YIE", since);
 	const bei10y = getLatestYield(db, "T10YIE", since);
 
 	const dxy = getLatestFx(db, "DXY", since);
@@ -473,6 +541,40 @@ export function analyzeUsdModel(db: Db, date: string): void {
 	// Real rate = 10Y nominal - 10Y BEI (used for rate support scoring)
 	const realRate10y = dgs10 != null && bei10y != null ? dgs10 - bei10y : null;
 
+	// Gold price (current + 7d ago) for convenience yield
+	const goldPrice = getLatestSentiment(db, "yahoo", "GLD", since);
+	const goldPricePrev = (() => {
+		const d = new Date(date);
+		d.setDate(d.getDate() - 14); // wider window to find a data point ~7d ago
+		const prevSince = d.toISOString().split("T")[0];
+		const rows = db
+			.select()
+			.from(sentimentSnapshots)
+			.where(
+				and(
+					eq(sentimentSnapshots.source, "yahoo"),
+					eq(sentimentSnapshots.metric, "GLD"),
+					gte(sentimentSnapshots.dataDate, prevSince),
+				),
+			)
+			.orderBy(desc(sentimentSnapshots.dataDate))
+			.all();
+		// Find an entry at least 5 days before latest
+		if (rows.length < 2) return null;
+		const target = new Date(rows[0].dataDate);
+		target.setDate(target.getDate() - 5);
+		const targetStr = target.toISOString().split("T")[0];
+		for (const row of rows) {
+			if (row.dataDate <= targetStr) return row.value;
+		}
+		return rows[rows.length - 1]?.value ?? null;
+	})();
+
+	// SOFR-IORB spread for funding market health
+	const sofr = getLatestLiquidity(db, "SOFR", since);
+	const iorb = getLatestLiquidity(db, "IORB", since);
+	const sofrIorbSpreadBps = sofr != null && iorb != null ? Math.round((sofr - iorb) * 100) : null;
+
 	// Check stale
 	if (dxy == null) staleSources.push("DXY");
 	if (tp10y == null) staleSources.push("term_premium");
@@ -481,7 +583,7 @@ export function analyzeUsdModel(db: Db, date: string): void {
 	// Factor scores
 	const rateScore = computeRateSupport(fedRate, dgs2, ecbRate, bojRate, soniaRate, realRate10y);
 	const riskScore = computeRiskPremium(tp10y, vix);
-	const cyScore = computeConvenienceYield(bei5y, bei10y, dxy);
+	const cyScore = computeConvenienceYield(goldPrice, goldPricePrev, sofrIorbSpreadBps, dxy, rateScore);
 	const hedgeScore = computeHedgeEfficiency(dxyChange, rateScore);
 	const globalScore = computeGlobalRelative(eurusd, usdcny, usdmxn);
 
@@ -528,8 +630,12 @@ export function analyzeUsdModel(db: Db, date: string): void {
 		vix,
 		risk_premium_score: Math.round(riskScore * 10) / 10,
 
-		bei_5y: bei5y,
-		bei_10y: bei10y,
+		gold_price: goldPrice,
+		gold_change_pct:
+			goldPrice != null && goldPricePrev != null && goldPricePrev > 0
+				? Math.round(((goldPrice - goldPricePrev) / goldPricePrev) * 10000) / 100
+				: null,
+		sofr_iorb_spread_bps: sofrIorbSpreadBps,
 		convenience_yield_score: Math.round(cyScore * 10) / 10,
 
 		yield_decomposition: decomposeYield(db, date, dgs10, bei10y, tp10y),
