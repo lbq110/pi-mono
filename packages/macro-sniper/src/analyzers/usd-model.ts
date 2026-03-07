@@ -234,11 +234,52 @@ function computeGlobalRelative(eurusd: number | null, usdcny: number | null, usd
 	return clamp(score);
 }
 
+/** Lookback days for yield decomposition delta comparison */
+const YIELD_DECOMP_LOOKBACK_DAYS = 7;
+
 /**
- * Determine yield decomposition driver.
- * 10Y yield = real rate estimate + BEI + term premium
+ * Get a value from yield_snapshots N calendar days ago for delta calculation.
+ */
+function getYieldNDaysAgo(db: Db, seriesId: string, currentDate: string, daysAgo: number): number | null {
+	const target = new Date(currentDate);
+	target.setDate(target.getDate() - daysAgo);
+	const targetStr = target.toISOString().split("T")[0];
+	// Find the closest entry on or before the target date
+	const row = db
+		.select()
+		.from(yieldSnapshots)
+		.where(
+			and(
+				eq(yieldSnapshots.seriesId, seriesId),
+				gte(
+					yieldSnapshots.dataDate,
+					(() => {
+						const d = new Date(currentDate);
+						d.setDate(d.getDate() - daysAgo - 5); // extra buffer for weekends
+						return d.toISOString().split("T")[0];
+					})(),
+				),
+			),
+		)
+		.orderBy(desc(yieldSnapshots.dataDate))
+		.all()
+		.filter((r) => r.dataDate <= targetStr);
+	return row[0]?.value ?? null;
+}
+
+/**
+ * Determine yield decomposition and primary driver.
+ * 10Y yield ≈ real rate + BEI (inflation expectation) + term premium (ACM)
+ *
+ * Driver is determined by **delta** (which component changed most over the lookback
+ * period), not by absolute level. This follows the logic that:
+ * - yield up driven by term premium → fiscal/uncertainty concern
+ * - yield up driven by inflation expectation → inflation stickiness
+ * - yield up driven by real rate → growth/policy tightening
  */
 function decomposeYield(
+	db: Db,
+	date: string,
 	dgs10: number | null,
 	bei10y: number | null,
 	tp10y: number | null,
@@ -249,9 +290,30 @@ function decomposeYield(
 	const realRate = nominal != null && inflation != null && termPrem != null ? nominal - inflation - termPrem : null;
 
 	let driver: "real_rate" | "inflation" | "term_premium" | "unknown" = "unknown";
-	if (termPrem != null && termPrem > 0.8) driver = "term_premium";
-	else if (realRate != null && realRate > 2.0) driver = "real_rate";
-	else if (inflation != null && inflation > 2.5) driver = "inflation";
+
+	// Delta-based driver detection: compare current vs N days ago
+	const prevBei = getYieldNDaysAgo(db, "T10YIE", date, YIELD_DECOMP_LOOKBACK_DAYS);
+	const prevTp = getYieldNDaysAgo(db, "THREEFYTP10", date, YIELD_DECOMP_LOOKBACK_DAYS);
+	const prevDgs10 = getYieldNDaysAgo(db, "DGS10", date, YIELD_DECOMP_LOOKBACK_DAYS);
+
+	if (prevBei != null && bei10y != null && prevTp != null && tp10y != null && prevDgs10 != null && dgs10 != null) {
+		const deltaBei = bei10y - prevBei;
+		const deltaTp = tp10y - prevTp;
+		// real rate delta = nominal delta - BEI delta - TP delta
+		const deltaReal = dgs10 - prevDgs10 - deltaBei - deltaTp;
+
+		const absBei = Math.abs(deltaBei);
+		const absTp = Math.abs(deltaTp);
+		const absReal = Math.abs(deltaReal);
+		const max = Math.max(absBei, absTp, absReal);
+
+		// Only assign driver if there's meaningful movement (> 1bp)
+		if (max > 0.01) {
+			if (max === absTp) driver = "term_premium";
+			else if (max === absBei) driver = "inflation";
+			else driver = "real_rate";
+		}
+	}
 
 	return {
 		nominal_10y: nominal,
@@ -358,7 +420,7 @@ export function analyzeUsdModel(db: Db, date: string): void {
 		bei_10y: bei10y,
 		convenience_yield_score: Math.round(cyScore * 10) / 10,
 
-		yield_decomposition: decomposeYield(dgs10, bei10y, tp10y),
+		yield_decomposition: decomposeYield(db, date, dgs10, bei10y, tp10y),
 
 		hedge_efficiency_score: Math.round(hedgeScore * 10) / 10,
 
