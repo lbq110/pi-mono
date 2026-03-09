@@ -116,9 +116,13 @@ export function startScheduler(streamText: (prompt: string, model: string) => Pr
 	scheduledTasks.push(
 		cron.schedule(
 			"0 8 * * *",
-			async () => {
-				log.info("Running scheduled full pipeline (08:00 ET)");
-				await runFullPipeline(streamText);
+			() => {
+				log.info("Triggered: daily full pipeline (08:00 ET)");
+				runFullPipeline(streamText)
+					.then(() => log.info("Daily pipeline completed successfully"))
+					.catch((err) =>
+						log.error({ error: err instanceof Error ? err.message : String(err) }, "Daily pipeline failed"),
+					);
 			},
 			{ timezone },
 		),
@@ -128,10 +132,12 @@ export function startScheduler(streamText: (prompt: string, model: string) => Pr
 	scheduledTasks.push(
 		cron.schedule(
 			"30 17 * * *",
-			async () => {
+			() => {
 				const config = loadConfig();
 				const db = getDb();
-				await collectYields(db, config.FRED_API_KEY);
+				collectYields(db, config.FRED_API_KEY).catch((err) =>
+					log.error({ error: err instanceof Error ? err.message : String(err) }, "Yield collection failed"),
+				);
 			},
 			{ timezone },
 		),
@@ -141,9 +147,14 @@ export function startScheduler(streamText: (prompt: string, model: string) => Pr
 	scheduledTasks.push(
 		cron.schedule(
 			"45 17 * * *",
-			async () => {
+			() => {
 				const db = getDb();
-				await collectCreditSpreads(db);
+				collectCreditSpreads(db).catch((err) =>
+					log.error(
+						{ error: err instanceof Error ? err.message : String(err) },
+						"Credit spread collection failed",
+					),
+				);
 			},
 			{ timezone },
 		),
@@ -153,12 +164,12 @@ export function startScheduler(streamText: (prompt: string, model: string) => Pr
 	scheduledTasks.push(
 		cron.schedule(
 			"0 * * * *",
-			async () => {
+			() => {
 				const config = loadConfig();
 				const db = getDb();
-				await collectSentiment(db, {
-					fredApiKey: config.FRED_API_KEY,
-				});
+				collectSentiment(db, { fredApiKey: config.FRED_API_KEY }).catch((err) =>
+					log.error({ error: err instanceof Error ? err.message : String(err) }, "Sentiment collection failed"),
+				);
 			},
 			{ timezone },
 		),

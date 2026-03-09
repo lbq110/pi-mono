@@ -69,7 +69,9 @@ export function analyzeLiquiditySignal(db: Db, date: string): void {
 	if (isStale(iorb.dataDate, STALE_THRESHOLDS.dailyFred)) staleSources.push("IORB");
 
 	// Compute net liquidity
-	const netLiquidity = walcl.value - wtregen.value - rrpontsyd.value;
+	// WALCL & WTREGEN are in Millions USD; RRPONTSYD is in Billions USD → convert to Millions
+	const rrpInMillions = rrpontsyd.value * 1000;
+	const netLiquidity = walcl.value - wtregen.value - rrpInMillions;
 
 	// Compute 7-day rolling change: need historical net liquidity values
 	// Fetch last 10 days of each series to compute rolling
@@ -85,7 +87,7 @@ export function analyzeLiquiditySignal(db: Db, date: string): void {
 		const tga = wtregenHistory.find((t) => t.dataDate <= w.dataDate);
 		const rrp = rrpHistory.find((r) => r.dataDate <= w.dataDate);
 		if (tga && rrp) {
-			netLiquidityValues.push(w.value - tga.value - rrp.value);
+			netLiquidityValues.push(w.value - tga.value - rrp.value * 1000);
 		}
 	}
 
@@ -110,7 +112,7 @@ export function analyzeLiquiditySignal(db: Db, date: string): void {
 		net_liquidity_7d_change: change7d,
 		fed_total_assets: walcl.value,
 		tga: wtregen.value,
-		on_rrp: rrpontsyd.value,
+		on_rrp: rrpInMillions, // converted from Billions to Millions for consistent units
 		sofr: sofr.value,
 		iorb: iorb.value,
 		sofr_iorb_spread_bps: sofrIorbSpreadBps,

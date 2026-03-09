@@ -1,4 +1,5 @@
 import { and, desc, eq, gte } from "drizzle-orm";
+import { getAssetManagerHedgeData, getLatestCftcNetPosition } from "../collectors/cftc.js";
 import type { Db } from "../db/client.js";
 import { analysisResults, fxSnapshots, liquiditySnapshots, sentimentSnapshots, yieldSnapshots } from "../db/schema.js";
 import { createChildLogger } from "../logger.js";
@@ -53,8 +54,19 @@ interface UsdModelMetadata {
 		driver: "real_rate" | "inflation" | "term_premium" | "unknown";
 	};
 
-	// Hedge efficiency (approximation)
-	hedge_efficiency_score: number;
+	// Hedge transmission efficiency
+	sofr_rate: number | null;
+	eur_str_rate: number | null;
+	cip_basis_proxy: number | null;
+	hedging_cost_score: number | null;
+	cftc_noncomm_net: number | null;
+	cftc_noncomm_net_change: number | null;
+	eur_asset_mgr_net: number | null;
+	eur_asset_mgr_net_change: number | null;
+	jpy_asset_mgr_net: number | null;
+	jpy_asset_mgr_net_change: number | null;
+	dxy_rate_divergence: number | null;
+	hedge_transmission_score: number;
 
 	// Global relative strength
 	eurusd: number | null;
@@ -366,17 +378,174 @@ function computeConvenienceYield(
 }
 
 /**
- * Compute hedge efficiency score.
- * Without real-time cross-currency basis data, use DXY trend as proxy.
- * If DXY is rising alongside rate support → low hedge ratio → bullish.
+ * Hedge transmission efficiency score.
+ * Returns 0-100 where 100 = hedging environment supports USD, 0 = blocks USD.
+ *
+ * Core insight: Even when US rate advantage is large, if investors fully hedge
+ * their FX exposure (buy US bonds + sell forward USD), capital inflow does NOT
+ * support spot USD. The hedge score measures whether rate differential actually
+ * translates into USD strength.
+ *
+ * Two components:
+ *
+ * A. HEDGING COST (40%): CIP-deviation-based proxy
+ *    Cost ≈ (i_USD − i_Foreign) − Basis
+ *    - High cost → investors go unhedged ("naked") → buying = pushes up USD → bullish
+ *    - Low cost → investors hedge fully → capital inflow muted for spot USD → bearish
+ *    We approximate Basis via SOFR vs €STR differential vs actual EUR/USD change.
+ *
+ * B. HEDGE RATIO PROXY (60%): combining three shadow indicators
+ *    b1. CFTC TFF: Asset manager EUR/JPY long positions (=selling forward USD = hedging)
+ *        Increasing AM long EUR + buying US bonds = high hedge ratio → bearish
+ *    b2. CFTC Legacy: USD Index speculative net position
+ *        Net short → market positioned against USD → bearish
+ *    b3. DXY-vs-rate divergence: If rate differential is strong but DXY isn't rising,
+ *        implies high hedge ratio is blocking transmission → bearish
  */
-function computeHedgeEfficiency(dxyChange: number | null, rateScore: number): number {
-	if (dxyChange == null) return 50;
-	// If DXY rising + rate support strong → hedge transmission working
-	if (dxyChange > 0 && rateScore > 60) return 70;
-	// DXY flat/down despite rate support → high hedge ratio, transmission blocked
-	if (dxyChange <= 0 && rateScore > 60) return 30;
-	return 50;
+function computeHedgeScore(hedgeInputs: HedgeScoreInputs): number {
+	let score = 50;
+	let totalWeight = 0;
+
+	// ── A. Hedging cost via CIP deviation (40%) ─────────────
+	const costScore = computeHedgingCostScore(hedgeInputs);
+	if (costScore != null) {
+		score += (costScore - 50) * 0.4;
+		totalWeight += 0.4;
+	}
+
+	// ── B. Hedge ratio proxy (60%) ──────────────────────────
+
+	// b1. Asset Manager positioning in EUR/JPY futures (25%)
+	// Long EUR futures = selling forward USD = actively hedging USD exposure
+	const amScore = computeAssetManagerHedgeSignal(hedgeInputs);
+	if (amScore != null) {
+		score += (amScore - 50) * 0.25;
+		totalWeight += 0.25;
+	}
+
+	// b2. CFTC USD Index speculative net (20%)
+	if (hedgeInputs.cftcUsdNet != null) {
+		// Typical range: -20,000 to +30,000 contracts
+		const positionScore = clamp(50 + (hedgeInputs.cftcUsdNet / 20000) * 30);
+		let momentumAdj = 0;
+		if (hedgeInputs.cftcUsdNetPrev != null) {
+			const delta = hedgeInputs.cftcUsdNet - hedgeInputs.cftcUsdNetPrev;
+			momentumAdj = clamp(50 + (delta / 5000) * 15) - 50;
+		}
+		score += (positionScore + momentumAdj - 50) * 0.2;
+		totalWeight += 0.2;
+	}
+
+	// b3. DXY-vs-rate divergence (15%)
+	// If rate score is high but DXY is flat/falling → high hedge ratio blocking transmission
+	if (hedgeInputs.dxyChange != null && hedgeInputs.rateScore != null) {
+		const expected = (hedgeInputs.rateScore - 50) * 0.1; // expected DXY move from rate support
+		const divergence = hedgeInputs.dxyChange - expected;
+		// Negative divergence = DXY underperforming rate support → high hedge ratio
+		const divScore = clamp(50 + divergence * 8);
+		score += (divScore - 50) * 0.15;
+		totalWeight += 0.15;
+	}
+
+	if (totalWeight < 0.1) return 50;
+	return clamp(score);
+}
+
+interface HedgeScoreInputs {
+	// For hedging cost (CIP proxy)
+	sofr: number | null;
+	eurStr: number | null;
+	eurusdChange: number | null; // weekly % change
+	// For CFTC positioning
+	cftcUsdNet: number | null;
+	cftcUsdNetPrev: number | null;
+	// For asset manager hedge ratio
+	eurAssetMgrNet: number | null;
+	eurAssetMgrNetPrev: number | null;
+	jpyAssetMgrNet: number | null;
+	jpyAssetMgrNetPrev: number | null;
+	// For DXY-rate divergence
+	dxyChange: number | null;
+	rateScore: number | null;
+}
+
+/**
+ * Hedging cost score via CIP deviation approximation.
+ * Cost ≈ (SOFR − €STR) − Basis
+ * where Basis ≈ actual EUR/USD change (annualized) vs theoretical interest parity
+ *
+ * If actual EUR/USD change is LESS than implied by rate diff → basis is negative
+ * → USD funding is expensive → hedge cost high → investors go unhedged → bullish for USD.
+ *
+ * If actual EUR/USD change is MORE than implied → basis is positive
+ * → hedge cost low → investors hedge fully → mutes USD spot support → bearish.
+ */
+function computeHedgingCostScore(inputs: HedgeScoreInputs): number | null {
+	if (inputs.sofr == null || inputs.eurStr == null || inputs.eurusdChange == null) return null;
+
+	const theoryDiff = inputs.sofr - inputs.eurStr; // e.g., 3.66 - 1.935 = 1.725%
+	// Theoretical forward discount: EUR/USD should fall (USD strengthen) by theoryDiff/100 annualized
+	// Actual weekly EUR/USD change, annualized
+	const actualAnnualized = inputs.eurusdChange * 52; // rough annualization
+
+	// CIP basis ≈ actual annualized change − (−theoryDiff)
+	// If theory says EUR/USD should depreciate by 1.7% but actually rose 5% annualized,
+	// basis = 5 − (−1.7) = 6.7 → very positive → cheap to hedge → bearish for spot USD
+	// If theory says -1.7% and actual is -3%, basis = -3 − (−1.7) = -1.3 → negative → expensive → bullish
+	const basis = actualAnnualized - -theoryDiff * 100;
+
+	// Negative basis → expensive to hedge → bullish (score > 50)
+	// Positive basis → cheap to hedge → bearish (score < 50)
+	return clamp(50 - basis * 3);
+}
+
+/**
+ * Asset manager hedge ratio signal from CFTC TFF data.
+ *
+ * When asset managers increase long EUR/JPY futures positions while simultaneously
+ * buying US bonds, they're hedging their USD exposure (buying bond = long USD cash,
+ * long EUR futures = short forward USD → net zero FX exposure).
+ *
+ * Rising AM net long in non-USD currencies → increasing hedge ratio → bearish for spot USD
+ * Falling AM net long → decreasing hedge ratio → bullish for spot USD
+ */
+function computeAssetManagerHedgeSignal(inputs: HedgeScoreInputs): number | null {
+	let score = 50;
+	let factors = 0;
+
+	// EUR asset manager positioning (weighted more due to EUR's DXY weight)
+	if (inputs.eurAssetMgrNet != null) {
+		// Typical range: -100k to +400k contracts
+		// High net long = heavy hedging = bearish for USD spot
+		const eurHedgeScore = clamp(70 - (inputs.eurAssetMgrNet / 200000) * 30);
+
+		// Momentum: if AM longs are INCREASING → more hedging → more bearish
+		if (inputs.eurAssetMgrNetPrev != null) {
+			const delta = inputs.eurAssetMgrNet - inputs.eurAssetMgrNetPrev;
+			// Positive delta = increasing longs = increasing hedge ratio = bearish
+			const momentum = clamp(50 - (delta / 30000) * 15) - 50;
+			score += (eurHedgeScore + momentum - 50) * 0.65; // EUR = ~57% of DXY
+		} else {
+			score += (eurHedgeScore - 50) * 0.65;
+		}
+		factors++;
+	}
+
+	// JPY asset manager positioning
+	if (inputs.jpyAssetMgrNet != null) {
+		const jpyHedgeScore = clamp(60 - (inputs.jpyAssetMgrNet / 100000) * 25);
+		if (inputs.jpyAssetMgrNetPrev != null) {
+			const delta = inputs.jpyAssetMgrNet - inputs.jpyAssetMgrNetPrev;
+			const momentum = clamp(50 - (delta / 20000) * 15) - 50;
+			score += (jpyHedgeScore + momentum - 50) * 0.35; // JPY = ~14% of DXY
+		} else {
+			score += (jpyHedgeScore - 50) * 0.35;
+		}
+		factors++;
+	}
+
+	if (factors === 0) return null;
+	return clamp(score);
 }
 
 /**
@@ -584,7 +753,52 @@ export function analyzeUsdModel(db: Db, date: string): void {
 	const rateScore = computeRateSupport(fedRate, dgs2, ecbRate, bojRate, soniaRate, realRate10y);
 	const riskScore = computeRiskPremium(tp10y, vix);
 	const cyScore = computeConvenienceYield(goldPrice, goldPricePrev, sofrIorbSpreadBps, dxy, rateScore);
-	const hedgeScore = computeHedgeEfficiency(dxyChange, rateScore);
+	// ── Hedge transmission data ─────────────────────────────
+	const cftcSince = (() => {
+		const d = new Date(date);
+		d.setDate(d.getDate() - 30); // COT is weekly, need wider window
+		return d.toISOString().split("T")[0];
+	})();
+	const cftcPositions = getLatestCftcNetPosition(db, cftcSince);
+	const amHedgeData = getAssetManagerHedgeData(db, cftcSince);
+
+	// €STR for CIP calculation
+	const eurStrRate = getLatestYield(db, "ECBESTRVOLWGTTRMDMNRT", since);
+
+	// EUR/USD weekly change for CIP basis proxy
+	const eurusdOld = (() => {
+		const rows = db
+			.select()
+			.from(fxSnapshots)
+			.where(and(eq(fxSnapshots.pair, "EURUSD"), gte(fxSnapshots.dataDate, cftcSince)))
+			.orderBy(desc(fxSnapshots.dataDate))
+			.limit(10)
+			.all();
+		if (rows.length < 2) return null;
+		const target = new Date(rows[0].dataDate);
+		target.setDate(target.getDate() - 7);
+		const targetStr = target.toISOString().split("T")[0];
+		for (const row of rows) {
+			if (row.dataDate <= targetStr) return row.rate;
+		}
+		return rows[rows.length - 1]?.rate ?? null;
+	})();
+	const eurusdChange = eurusd != null && eurusdOld != null ? ((eurusd - eurusdOld) / eurusdOld) * 100 : null;
+
+	const hedgeInputs: HedgeScoreInputs = {
+		sofr,
+		eurStr: eurStrRate,
+		eurusdChange,
+		cftcUsdNet: cftcPositions?.current ?? null,
+		cftcUsdNetPrev: cftcPositions?.previous ?? null,
+		eurAssetMgrNet: amHedgeData.eurAssetMgrNet?.current ?? null,
+		eurAssetMgrNetPrev: amHedgeData.eurAssetMgrNet?.previous ?? null,
+		jpyAssetMgrNet: amHedgeData.jpyAssetMgrNet?.current ?? null,
+		jpyAssetMgrNetPrev: amHedgeData.jpyAssetMgrNet?.previous ?? null,
+		dxyChange,
+		rateScore,
+	};
+	const hedgeScore = computeHedgeScore(hedgeInputs);
 	const globalScore = computeGlobalRelative(eurusd, usdcny, usdmxn);
 
 	const w = USD_MODEL_WEIGHTS;
@@ -592,7 +806,7 @@ export function analyzeUsdModel(db: Db, date: string): void {
 		rateScore * w.rateSupport +
 		riskScore * w.riskPremium +
 		cyScore * w.convenienceYield +
-		hedgeScore * w.hedgeEfficiency +
+		hedgeScore * w.hedgePosition +
 		globalScore * w.globalRelative;
 
 	const compositeRounded = Math.round(composite * 10) / 10;
@@ -640,7 +854,36 @@ export function analyzeUsdModel(db: Db, date: string): void {
 
 		yield_decomposition: decomposeYield(db, date, dgs10, bei10y, tp10y),
 
-		hedge_efficiency_score: Math.round(hedgeScore * 10) / 10,
+		sofr_rate: sofr,
+		eur_str_rate: eurStrRate,
+		cip_basis_proxy: (() => {
+			if (sofr == null || eurStrRate == null || eurusdChange == null) return null;
+			const theoryDiff = sofr - eurStrRate;
+			const actualAnn = eurusdChange * 52;
+			return Math.round((actualAnn - -theoryDiff * 100) * 100) / 100;
+		})(),
+		hedging_cost_score:
+			computeHedgingCostScore(hedgeInputs) != null
+				? Math.round(computeHedgingCostScore(hedgeInputs)! * 10) / 10
+				: null,
+		cftc_noncomm_net: cftcPositions?.current ?? null,
+		cftc_noncomm_net_change: cftcPositions != null ? cftcPositions.current - cftcPositions.previous : null,
+		eur_asset_mgr_net: amHedgeData.eurAssetMgrNet?.current ?? null,
+		eur_asset_mgr_net_change:
+			amHedgeData.eurAssetMgrNet != null
+				? amHedgeData.eurAssetMgrNet.current - amHedgeData.eurAssetMgrNet.previous
+				: null,
+		jpy_asset_mgr_net: amHedgeData.jpyAssetMgrNet?.current ?? null,
+		jpy_asset_mgr_net_change:
+			amHedgeData.jpyAssetMgrNet != null
+				? amHedgeData.jpyAssetMgrNet.current - amHedgeData.jpyAssetMgrNet.previous
+				: null,
+		dxy_rate_divergence: (() => {
+			if (dxyChange == null || rateScore == null) return null;
+			const expected = (rateScore - 50) * 0.1;
+			return Math.round((dxyChange - expected) * 100) / 100;
+		})(),
+		hedge_transmission_score: Math.round(hedgeScore * 10) / 10,
 
 		eurusd,
 		usdjpy,

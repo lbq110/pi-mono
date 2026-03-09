@@ -1,6 +1,7 @@
 import type { Db } from "../db/client.js";
 import { yieldSnapshots } from "../db/schema.js";
 import { createChildLogger } from "../logger.js";
+import { collectCftcPositions } from "./cftc.js";
 import { fetchFredSeries } from "./fred.js";
 import { collectFxRates } from "./fx.js";
 
@@ -15,14 +16,15 @@ const log = createChildLogger("collector");
  * - T10Y3M:     10Y-3M spread (yield curve slope)
  */
 const USD_MODEL_FRED_SERIES = [
-	"THREEFYTP10", // 10Y term premium (ACM model)
-	"THREEFYTP2", //  2Y term premium
-	"T5YIE", //       5Y breakeven inflation rate
-	"T10YIE", //      10Y breakeven inflation rate
-	"T10Y3M", //      10Y-3M spread (yield curve slope)
-	"ECBMRRFR", //    ECB main refinancing rate (daily)
-	"IUDSOIA", //     SONIA - UK overnight rate (daily)
-	"IRSTCI01JPM156N", // BOJ call money rate (monthly)
+	"THREEFYTP10", //          10Y term premium (ACM model)
+	"THREEFYTP2", //           2Y term premium
+	"T5YIE", //                5Y breakeven inflation rate
+	"T10YIE", //               10Y breakeven inflation rate
+	"T10Y3M", //               10Y-3M spread (yield curve slope)
+	"ECBMRRFR", //             ECB main refinancing rate (daily)
+	"IUDSOIA", //              SONIA - UK overnight rate (daily)
+	"IRSTCI01JPM156N", //      BOJ call money rate (monthly)
+	"ECBESTRVOLWGTTRMDMNRT", // €STR - Euro Short-Term Rate (daily, for CIP/hedge cost calc)
 ] as const;
 
 /**
@@ -35,6 +37,9 @@ export async function collectUsdModelData(db: Db, fredApiKey: string): Promise<v
 
 	// 1. FX rates
 	await collectFxRates(db);
+
+	// 1b. CFTC COT positioning data (weekly)
+	await collectCftcPositions(db);
 
 	// 2. FRED series for term premium + BEI
 	const fetchedAt = new Date().toISOString();

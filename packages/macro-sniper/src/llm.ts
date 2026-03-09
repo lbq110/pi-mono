@@ -1,13 +1,14 @@
 import type { Api, Model } from "@mariozechner/pi-ai";
 import { completeSimple, getModel } from "@mariozechner/pi-ai";
+import { getAnthropicToken } from "./anthropic-auth.js";
 import { loadConfig } from "./config.js";
 import { createChildLogger } from "./logger.js";
+import { postToSlack } from "./notifications/slack.js";
 
 const log = createChildLogger("reporter");
 
 /**
  * Custom model definition for models not yet in pi-ai's registry.
- * Follows the same structure as models.generated.ts.
  */
 const CUSTOM_MODELS: Record<string, Model<Api>> = {
 	"gemini-3.1-flash-lite-preview": {
@@ -24,7 +25,7 @@ const CUSTOM_MODELS: Record<string, Model<Api>> = {
 	},
 };
 
-/** Model ID → { provider, modelId } lookup for models in pi-ai's registry. */
+/** Model ID -> { provider, modelId } lookup for models in pi-ai's registry. */
 const REGISTRY_MODELS: Record<string, { provider: string; modelId: string }> = {
 	"claude-opus-4-6": { provider: "anthropic", modelId: "claude-opus-4-6" },
 	"claude-sonnet-4-6": { provider: "anthropic", modelId: "claude-sonnet-4-6" },
@@ -33,11 +34,9 @@ const REGISTRY_MODELS: Record<string, { provider: string; modelId: string }> = {
 };
 
 function resolveModel(modelName: string): Model<Api> | null {
-	// Check custom models first
 	const custom = CUSTOM_MODELS[modelName];
 	if (custom) return custom;
 
-	// Then check pi-ai registry
 	const entry = REGISTRY_MODELS[modelName];
 	if (!entry) {
 		log.error({ modelName }, "Unknown model name, cannot resolve");
@@ -51,19 +50,50 @@ function resolveModel(modelName: string): Model<Api> | null {
 	return model as Model<Api>;
 }
 
-/** Determine provider from model name for API key routing. */
 function getProviderForModel(modelName: string): string | null {
 	if (CUSTOM_MODELS[modelName]) return CUSTOM_MODELS[modelName].provider;
 	const entry = REGISTRY_MODELS[modelName];
 	return entry?.provider ?? null;
 }
 
+/** Track whether we've already sent a Slack alert for token expiry in this session */
+let tokenExpiryAlerted = false;
+
+/**
+ * Send a Slack alert about Anthropic token expiry.
+ */
+async function alertTokenExpiry(modelName: string, fallbackModel: string): Promise<void> {
+	if (tokenExpiryAlerted) return;
+	tokenExpiryAlerted = true;
+
+	const config = loadConfig();
+	if (!config.SLACK_BOT_TOKEN || !config.SLACK_CHANNEL_ID) return;
+
+	const message = [
+		"⚠️ *Macro Sniper: Anthropic OAuth Token 已过期*",
+		"",
+		`请求模型 \`${modelName}\` 失败，已自动切换到 \`${fallbackModel}\`。`,
+		"",
+		"请在服务器上运行 `pi` 登录刷新 token，或手动更新 `/root/.pi/agent/auth.json`。",
+	].join("\n");
+
+	try {
+		await postToSlack(message, {
+			botToken: config.SLACK_BOT_TOKEN,
+			channelId: config.SLACK_CHANNEL_ID,
+		});
+		log.info("Token expiry alert sent to Slack");
+	} catch (error) {
+		log.error({ error: error instanceof Error ? error.message : String(error) }, "Failed to send token expiry alert");
+	}
+}
+
 /**
  * Send a prompt to the LLM and return the generated text.
- * Implements fallback: primary model → LLM_FALLBACK_MODEL → error.
  *
- * This function matches the `(prompt: string, model: string) => Promise<string>`
- * signature used by reporters/pipeline.ts and jobs/scheduler.ts.
+ * For Anthropic models, automatically resolves OAuth token from pi's auth.json
+ * and attempts refresh if expired. If refresh fails, falls back to the configured
+ * fallback model and sends a Slack alert.
  */
 export async function streamText(prompt: string, modelName: string): Promise<string> {
 	const config = loadConfig();
@@ -74,6 +104,18 @@ export async function streamText(prompt: string, modelName: string): Promise<str
 		const model = resolveModel(name);
 		if (!model) {
 			log.warn({ model: name }, "Model not resolvable, trying next");
+			continue;
+		}
+
+		// Resolve API key
+		const apiKey = await resolveApiKey(name, config);
+		if (apiKey === null) {
+			log.warn({ model: name }, "No API key available, trying next");
+			// If primary model (Anthropic) has no key, alert and skip
+			if (name === modelName && getProviderForModel(name) === "anthropic") {
+				const fallback = modelsToTry.find((m) => m !== name) ?? "gemini-3.1-flash-lite-preview";
+				await alertTokenExpiry(name, fallback);
+			}
 			continue;
 		}
 
@@ -93,11 +135,10 @@ export async function streamText(prompt: string, modelName: string): Promise<str
 				},
 				{
 					temperature: config.LLM_TEMPERATURE,
-					apiKey: getApiKeyForModel(name, config),
+					apiKey,
 				},
 			);
 
-			// Extract text from assistant message content
 			const textParts = result.content
 				.filter((c): c is { type: "text"; text: string } => c.type === "text")
 				.map((c) => c.text);
@@ -118,18 +159,37 @@ export async function streamText(prompt: string, modelName: string): Promise<str
 		} catch (error) {
 			lastError = error instanceof Error ? error : new Error(String(error));
 			log.error({ model: name, error: lastError.message }, "LLM call failed, trying next");
+
+			// If Anthropic call failed (likely auth), alert
+			if (name === modelName && getProviderForModel(name) === "anthropic") {
+				const fallback = modelsToTry.find((m) => m !== name) ?? "gemini-3.1-flash-lite-preview";
+				await alertTokenExpiry(name, fallback);
+			}
 		}
 	}
 
 	throw lastError ?? new Error("All LLM models failed");
 }
 
-/** Get the appropriate API key for a model. */
-function getApiKeyForModel(modelName: string, config: ReturnType<typeof loadConfig>): string | undefined {
+/**
+ * Resolve API key for a model.
+ * For Anthropic: uses OAuth token from pi's auth.json (with auto-refresh).
+ * For Google: uses GEMINI_API_KEY from env.
+ * Returns null if no key available.
+ */
+async function resolveApiKey(modelName: string, config: ReturnType<typeof loadConfig>): Promise<string | null> {
 	const provider = getProviderForModel(modelName);
-	if (!provider) return undefined;
+	if (!provider) return null;
 
-	if (provider === "anthropic") return config.ANTHROPIC_API_KEY;
-	if (provider === "google") return config.GEMINI_API_KEY;
-	return undefined;
+	if (provider === "anthropic") {
+		// Priority: env var > OAuth token from auth.json
+		if (config.ANTHROPIC_API_KEY) return config.ANTHROPIC_API_KEY;
+		return await getAnthropicToken();
+	}
+
+	if (provider === "google") {
+		return config.GEMINI_API_KEY ?? null;
+	}
+
+	return null;
 }

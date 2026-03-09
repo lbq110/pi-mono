@@ -95,7 +95,7 @@ export const USD_MODEL_WEIGHTS = {
 	rateSupport: 0.3, // r_f: interest differential
 	riskPremium: 0.25, // π_risk: policy/fiscal uncertainty
 	convenienceYield: 0.15, // cy: USD safety premium
-	hedgeEfficiency: 0.1, // hedge transmission
+	hedgePosition: 0.1, // hedge cost & CFTC positioning
 	globalRelative: 0.2, // passive strength from weak peers
 };
 

@@ -15,7 +15,7 @@ export const logger = pino({
 		: {}),
 });
 
-export type ModuleName = "collector" | "analyzer" | "reporter" | "notification" | "job" | "cli" | "db";
+export type ModuleName = "collector" | "analyzer" | "reporter" | "notification" | "job" | "cli" | "db" | "auth";
 
 export function createChildLogger(module: ModuleName) {
 	return logger.child({ module });
