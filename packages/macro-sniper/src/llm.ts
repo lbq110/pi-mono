@@ -173,7 +173,10 @@ export async function streamText(prompt: string, modelName: string): Promise<str
 
 /**
  * Resolve API key for a model.
- * For Anthropic: uses OAuth token from pi's auth.json (with auto-refresh).
+ *
+ * For Anthropic: refreshes OAuth token from pi's auth.json if needed,
+ * sets it as ANTHROPIC_OAUTH_TOKEN so pi-ai picks it up automatically
+ * (which also enables Claude Code OAuth headers).
  * For Google: uses GEMINI_API_KEY from env.
  * Returns null if no key available.
  */
@@ -182,9 +185,17 @@ async function resolveApiKey(modelName: string, config: ReturnType<typeof loadCo
 	if (!provider) return null;
 
 	if (provider === "anthropic") {
-		// Priority: env var > OAuth token from auth.json
+		// Explicit API key takes priority
 		if (config.ANTHROPIC_API_KEY) return config.ANTHROPIC_API_KEY;
-		return await getAnthropicToken();
+
+		// OAuth token from pi's auth.json (auto-refreshed via pi-ai)
+		const token = await getAnthropicToken();
+		if (token) {
+			// Set env var so pi-ai's getEnvApiKey picks it up and treats it as OAuth
+			process.env.ANTHROPIC_OAUTH_TOKEN = token;
+			return token;
+		}
+		return null;
 	}
 
 	if (provider === "google") {

@@ -1,4 +1,5 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { refreshAnthropicToken } from "@mariozechner/pi-ai";
 import { createChildLogger } from "./logger.js";
 
 const log = createChildLogger("auth");
@@ -7,10 +8,6 @@ const AUTH_FILE = "/root/.pi/agent/auth.json";
 
 /** Buffer before actual expiry to trigger refresh (5 minutes) */
 const EXPIRY_BUFFER_MS = 5 * 60 * 1000;
-
-/** Anthropic OAuth token exchange endpoint */
-const TOKEN_ENDPOINT = "https://auth.anthropic.com/oauth/token";
-const CLIENT_ID = "9d1c250a-e61b-44e4-8f00-c755e0660581";
 
 interface AuthData {
 	anthropic: {
@@ -35,65 +32,19 @@ function writeAuthFile(data: AuthData): void {
 }
 
 /**
- * Refresh the Anthropic OAuth access token using the refresh token.
- * Returns the new access token, or null on failure.
- */
-async function refreshAccessToken(refreshToken: string): Promise<{ access: string; expires: number } | null> {
-	try {
-		log.info("Refreshing Anthropic OAuth access token");
-		const response = await fetch(TOKEN_ENDPOINT, {
-			method: "POST",
-			headers: { "Content-Type": "application/x-www-form-urlencoded" },
-			body: new URLSearchParams({
-				grant_type: "refresh_token",
-				refresh_token: refreshToken,
-				client_id: CLIENT_ID,
-			}),
-		});
-
-		if (!response.ok) {
-			const body = await response.text();
-			log.error({ status: response.status, body: body.slice(0, 200) }, "Token refresh failed");
-			return null;
-		}
-
-		const data = (await response.json()) as {
-			access_token: string;
-			expires_in: number;
-			refresh_token?: string;
-		};
-
-		const expires = Date.now() + data.expires_in * 1000;
-		log.info({ expiresIn: data.expires_in }, "Access token refreshed");
-
-		// Update auth file with new tokens
-		const auth = readAuthFile();
-		if (auth) {
-			auth.anthropic.access = data.access_token;
-			auth.anthropic.expires = expires;
-			if (data.refresh_token) {
-				auth.anthropic.refresh = data.refresh_token;
-			}
-			writeAuthFile(auth);
-		}
-
-		return { access: data.access_token, expires };
-	} catch (error) {
-		const msg = error instanceof Error ? error.message : String(error);
-		log.error({ error: msg }, "Token refresh error");
-		return null;
-	}
-}
-
-/**
  * Get a valid Anthropic OAuth access token.
- * - If token is still valid, return it.
- * - If expired or about to expire, try to refresh.
- * - Returns null if no token available or refresh fails.
+ *
+ * Reads from pi's auth.json. If the token is expired or about to expire,
+ * refreshes it using pi-ai's refreshAnthropicToken (same endpoint pi uses).
+ * Updates auth.json with the new token on successful refresh.
+ * Returns null if no token available or refresh fails.
  */
 export async function getAnthropicToken(): Promise<string | null> {
 	const auth = readAuthFile();
-	if (!auth?.anthropic) return null;
+	if (!auth?.anthropic) {
+		log.warn("No Anthropic auth data in auth.json");
+		return null;
+	}
 
 	const { access, expires, refresh } = auth.anthropic;
 
@@ -102,20 +53,28 @@ export async function getAnthropicToken(): Promise<string | null> {
 		return access;
 	}
 
-	// Try to refresh
-	log.info("Access token expired or about to expire, refreshing");
-	const refreshed = await refreshAccessToken(refresh);
-	if (refreshed) {
-		return refreshed.access;
-	}
+	// Token expired or about to expire — refresh using pi-ai's function
+	try {
+		log.info("Anthropic OAuth token expired or about to expire, refreshing");
+		const refreshed = await refreshAnthropicToken(refresh);
 
-	// Refresh failed — token is dead
-	return null;
+		// Update auth.json with new tokens
+		auth.anthropic.access = refreshed.access;
+		auth.anthropic.expires = refreshed.expires;
+		auth.anthropic.refresh = refreshed.refresh;
+		writeAuthFile(auth);
+
+		log.info({ expiresAt: new Date(refreshed.expires).toISOString() }, "Anthropic OAuth token refreshed");
+		return refreshed.access;
+	} catch (error) {
+		const msg = error instanceof Error ? error.message : String(error);
+		log.error({ error: msg }, "Anthropic OAuth token refresh failed");
+		return null;
+	}
 }
 
 /**
- * Check if Anthropic token is available and valid (without refreshing).
- * Used for quick checks.
+ * Check if Anthropic token is available and valid.
  */
 export function isAnthropicTokenValid(): boolean {
 	const auth = readAuthFile();
