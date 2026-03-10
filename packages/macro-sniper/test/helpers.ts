@@ -1,7 +1,7 @@
 import Database from "better-sqlite3";
-import { sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/better-sqlite3";
 import type { Db } from "../src/db/client.js";
+import { runMigrationsOnDb } from "../src/db/migrate.js";
 import * as schema from "../src/db/schema.js";
 
 /** Create an in-memory SQLite DB with all tables and indexes. */
@@ -9,82 +9,7 @@ export function createTestDb(): Db {
 	const sqlite = new Database(":memory:");
 	sqlite.pragma("journal_mode = WAL");
 	const db = drizzle(sqlite, { schema });
-
-	db.run(sql`CREATE TABLE liquidity_snapshots (
-		id INTEGER PRIMARY KEY AUTOINCREMENT,
-		data_date TEXT NOT NULL,
-		fetched_at TEXT NOT NULL,
-		series_id TEXT NOT NULL,
-		value REAL NOT NULL
-	)`);
-	db.run(sql`CREATE UNIQUE INDEX uq_liquidity_series_date ON liquidity_snapshots(series_id, data_date)`);
-
-	db.run(sql`CREATE TABLE yield_snapshots (
-		id INTEGER PRIMARY KEY AUTOINCREMENT,
-		data_date TEXT NOT NULL,
-		fetched_at TEXT NOT NULL,
-		series_id TEXT NOT NULL,
-		value REAL NOT NULL
-	)`);
-	db.run(sql`CREATE UNIQUE INDEX uq_yield_series_date ON yield_snapshots(series_id, data_date)`);
-
-	db.run(sql`CREATE TABLE credit_snapshots (
-		id INTEGER PRIMARY KEY AUTOINCREMENT,
-		data_date TEXT NOT NULL,
-		fetched_at TEXT NOT NULL,
-		symbol TEXT NOT NULL,
-		price REAL NOT NULL
-	)`);
-	db.run(sql`CREATE UNIQUE INDEX uq_credit_symbol_date ON credit_snapshots(symbol, data_date)`);
-
-	db.run(sql`CREATE TABLE sentiment_snapshots (
-		id INTEGER PRIMARY KEY AUTOINCREMENT,
-		data_date TEXT NOT NULL,
-		fetched_at TEXT NOT NULL,
-		source TEXT NOT NULL,
-		metric TEXT NOT NULL,
-		value REAL NOT NULL
-	)`);
-	db.run(sql`CREATE UNIQUE INDEX uq_sentiment_source_date ON sentiment_snapshots(source, metric, data_date)`);
-
-	db.run(sql`CREATE TABLE fx_snapshots (
-		id INTEGER PRIMARY KEY AUTOINCREMENT,
-		data_date TEXT NOT NULL,
-		fetched_at TEXT NOT NULL,
-		pair TEXT NOT NULL,
-		rate REAL NOT NULL
-	)`);
-	db.run(sql`CREATE UNIQUE INDEX uq_fx_pair_date ON fx_snapshots(pair, data_date)`);
-
-	db.run(sql`CREATE TABLE analysis_results (
-		id INTEGER PRIMARY KEY AUTOINCREMENT,
-		date TEXT NOT NULL,
-		type TEXT NOT NULL,
-		signal TEXT NOT NULL,
-		metadata TEXT NOT NULL,
-		created_at TEXT NOT NULL
-	)`);
-	db.run(sql`CREATE UNIQUE INDEX uq_analysis_type_date ON analysis_results(type, date)`);
-
-	db.run(sql`CREATE TABLE generated_reports (
-		id INTEGER PRIMARY KEY AUTOINCREMENT,
-		date TEXT NOT NULL,
-		report_type TEXT NOT NULL,
-		content TEXT NOT NULL,
-		model TEXT NOT NULL,
-		created_at TEXT NOT NULL
-	)`);
-
-	db.run(sql`CREATE TABLE job_runs (
-		id INTEGER PRIMARY KEY AUTOINCREMENT,
-		job TEXT NOT NULL,
-		status TEXT NOT NULL,
-		started_at TEXT NOT NULL,
-		finished_at TEXT,
-		error TEXT,
-		duration_ms INTEGER
-	)`);
-
+	runMigrationsOnDb(db);
 	return db;
 }
 
@@ -236,4 +161,70 @@ export function seedSentimentExtremeFear(db: Db): void {
 			.values({ dataDate: TODAY, fetchedAt: FETCHED, source: r.source, metric: r.metric, value: r.value })
 			.run();
 	}
+}
+
+/**
+ * Seed 8 days of hourly BTCUSD candles so btc-signal analyzer has enough data for MA7d.
+ * Also seeds SPY/QQQ/IWM/DXY for correlation matrix.
+ * Uses dates relative to Date.now() so the btc-signal cutoff filter does not exclude them.
+ */
+export function seedHourlyPrices(db: Db): void {
+	const symbols = ["BTCUSD", "SPY", "QQQ", "IWM", "DXY"] as const;
+	const basePrices: Record<string, number> = {
+		BTCUSD: 65000,
+		SPY: 480,
+		QQQ: 420,
+		IWM: 210,
+		DXY: 104,
+	};
+
+	// Base: 9 days ago so all 8 days fall within the MA7d window cutoff (Date.now() - 9d)
+	const baseDate = new Date(Date.now() - 9 * 24 * 60 * 60 * 1000);
+	baseDate.setUTCHours(0, 0, 0, 0);
+
+	for (const symbol of symbols) {
+		const base = basePrices[symbol];
+		for (let d = 0; d < 8; d++) {
+			for (let h = 0; h < 24; h++) {
+				const dt = new Date(baseDate.getTime() + (d * 24 + h) * 60 * 60 * 1000);
+				const datetime = dt.toISOString();
+				const price = base * (1 + (d * 24 + h) * 0.0001);
+				db.insert(schema.hourlyPrices)
+					.values({
+						symbol,
+						datetime,
+						open: price,
+						high: price * 1.001,
+						low: price * 0.999,
+						close: price,
+						volume: symbol === "BTCUSD" ? 500_000_000 : 1_000_000,
+					})
+					.onConflictDoNothing()
+					.run();
+			}
+		}
+	}
+
+	// BTC 24h stats into sentiment_snapshots
+	const todayActual = new Date().toISOString().split("T")[0];
+	db.insert(schema.sentimentSnapshots)
+		.values({
+			dataDate: todayActual,
+			fetchedAt: new Date().toISOString(),
+			source: "binance",
+			metric: "btc_change_pct_24h",
+			value: 1.5,
+		})
+		.onConflictDoNothing()
+		.run();
+	db.insert(schema.sentimentSnapshots)
+		.values({
+			dataDate: todayActual,
+			fetchedAt: new Date().toISOString(),
+			source: "binance",
+			metric: "btc_volume_24h",
+			value: 1_500_000_000,
+		})
+		.onConflictDoNothing()
+		.run();
 }

@@ -1,4 +1,5 @@
 import { sql } from "drizzle-orm";
+import type { Db } from "./client.js";
 import { getDb } from "./client.js";
 import {
 	analysisResults,
@@ -19,12 +20,10 @@ import {
 } from "./schema.js";
 
 /**
- * Run migrations by creating all tables if they don't exist.
- * Uses CREATE TABLE IF NOT EXISTS for idempotency.
+ * Run all migrations on an existing Db instance.
+ * Exported for use in tests with in-memory databases.
  */
-export function runMigrations(dbPath?: string): void {
-	const db = getDb(dbPath);
-
+export function runMigrationsOnDb(db: Db): void {
 	db.run(sql`
 		CREATE TABLE IF NOT EXISTS ${liquiditySnapshots} (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -264,4 +263,12 @@ export function runMigrations(dbPath?: string): void {
 
 	db.run(sql`CREATE INDEX IF NOT EXISTS idx_risk_events_symbol ON risk_events(symbol, created_at)`);
 	db.run(sql`CREATE INDEX IF NOT EXISTS idx_risk_events_cooldown ON risk_events(symbol, cooldown_until)`);
+}
+
+/**
+ * Run migrations using the shared DB singleton (file-based).
+ * Accepts optional dbPath to override the default path.
+ */
+export function runMigrations(dbPath?: string): void {
+	runMigrationsOnDb(getDb(dbPath));
 }

@@ -7,6 +7,7 @@ import {
 	createTestDb,
 	seedCredit,
 	seedCreditBreach,
+	seedHourlyPrices,
 	seedLiquidity,
 	seedSentiment,
 	seedSentimentExtremeFear,
@@ -23,14 +24,17 @@ describe("end-to-end pipeline", () => {
 		seedYields(db);
 		seedCredit(db);
 		seedSentiment(db);
+		seedHourlyPrices(db);
 
 		// Step 2: Run analysis pipeline (reads raw data from DB, writes signals to DB)
 		runAnalysisPipeline(db, TODAY);
 
-		// Verify all 6 analysis results exist
+		// Verify all 8 analysis results exist (Phase 1-3)
 		const analysisRows = db.select().from(schema.analysisResults).all();
 		const types = analysisRows.map((r) => r.type).sort();
 		expect(types).toEqual([
+			"btc_signal",
+			"correlation_matrix",
 			"credit_risk",
 			"liquidity_signal",
 			"market_bias",
@@ -66,6 +70,7 @@ describe("end-to-end pipeline", () => {
 		seedYields(db);
 		seedCreditBreach(db); // HYG breach for consecutive days
 		seedSentiment(db);
+		seedHourlyPrices(db);
 
 		runAnalysisPipeline(db, TODAY);
 
@@ -131,6 +136,7 @@ describe("end-to-end pipeline", () => {
 		seedYields(db);
 		seedCredit(db);
 		seedSentimentExtremeFear(db);
+		seedHourlyPrices(db);
 
 		runAnalysisPipeline(db, TODAY);
 
@@ -149,6 +155,7 @@ describe("end-to-end pipeline", () => {
 		seedYields(db);
 		seedCredit(db);
 		seedSentiment(db);
+		seedHourlyPrices(db);
 		runAnalysisPipeline(db, TODAY);
 
 		const mockLlm = async () => "Report v1";

@@ -7,7 +7,15 @@ import type { Db } from "../src/db/client.js";
 import * as schema from "../src/db/schema.js";
 import { runAnalysisPipeline } from "../src/jobs/pipeline.js";
 import { generateDailyReport } from "../src/reporters/pipeline.js";
-import { createTestDb, seedCredit, seedLiquidity, seedSentiment, seedYields, TODAY } from "./helpers.js";
+import {
+	createTestDb,
+	seedCredit,
+	seedHourlyPrices,
+	seedLiquidity,
+	seedSentiment,
+	seedYields,
+	TODAY,
+} from "./helpers.js";
 
 describe("analyzers", () => {
 	let db: Db;
@@ -80,18 +88,21 @@ describe("analyzers", () => {
 });
 
 describe("full analysis pipeline", () => {
-	it("produces all 6 analysis results including market_bias and usd_model", () => {
+	it("produces all 8 analysis results including btc_signal and correlation_matrix", () => {
 		const db = createTestDb();
 		seedLiquidity(db);
 		seedYields(db);
 		seedCredit(db);
 		seedSentiment(db);
+		seedHourlyPrices(db);
 
 		runAnalysisPipeline(db, TODAY);
 
 		const rows = db.select().from(schema.analysisResults).all();
 		const types = rows.map((r) => r.type).sort();
 		expect(types).toEqual([
+			"btc_signal",
+			"correlation_matrix",
 			"credit_risk",
 			"liquidity_signal",
 			"market_bias",
@@ -118,6 +129,7 @@ describe("report generation (mock LLM)", () => {
 		seedYields(db);
 		seedCredit(db);
 		seedSentiment(db);
+		seedHourlyPrices(db);
 
 		runAnalysisPipeline(db, TODAY);
 
