@@ -81,6 +81,8 @@ export const marketBiasMetadataSchema = z.object({
 		curve: z.string(),
 		credit: z.string(),
 		sentiment: z.string(),
+		btc: z.string().optional(),
+		correlation: z.string().optional(),
 	}),
 	conflicts: z.array(z.string()),
 	tags: z.array(z.string()),
@@ -142,6 +144,45 @@ export const usdModelSignalMetadataSchema = z.object({
 
 export type UsdModelSignalMetadata = z.infer<typeof usdModelSignalMetadataSchema>;
 
+// ─── BTC Signal Metadata ─────────────────────────
+
+export const btcSignalMetadataSchema = z.object({
+	btc_price: z.number(),
+	ma7d: z.number(),
+	price_vs_ma_pct: z.number(), // (price - ma7d) / ma7d * 100
+	above_ma7d: z.boolean(),
+	volume_24h: z.number(), // USDT volume
+	volume_ma7d: z.number(), // 7-day average daily volume
+	volume_ratio: z.number(), // volume_24h / volume_ma7d
+	volume_expanding: z.boolean(), // volume_ratio > 1.2
+	change_pct_24h: z.number(),
+	sharp_drop_alert: z.boolean(), // change_pct_24h < -5%
+	equity_score_modifier: z.number(), // +5 bullish, -10 sharp drop, 0 neutral
+	daily_closes: z.array(z.number()), // last 7 daily closes (oldest first)
+	stale: z.boolean(),
+});
+
+export type BtcSignalMetadata = z.infer<typeof btcSignalMetadataSchema>;
+
+// ─── Correlation Matrix Metadata ─────────────────
+
+// Correlation symbol constants (used for documentation only; actual logic in correlation.ts)
+
+export const correlationMatrixMetadataSchema = z.object({
+	// Flat map of pair correlations, e.g. "SPY_BTCUSD": 0.72
+	window_7d_hourly: z.record(z.string(), z.number()),
+	window_30d_daily: z.record(z.string(), z.number()),
+	btc_spy_7d: z.number().nullable(),
+	btc_spy_30d: z.number().nullable(),
+	regime_7d: z.enum(["synchronized", "independent", "neutral"]),
+	regime_30d: z.enum(["synchronized", "independent", "neutral"]),
+	data_points_7d: z.number(), // aligned candles used
+	data_points_30d: z.number(), // aligned days used
+	stale: z.boolean(),
+});
+
+export type CorrelationMatrixMetadata = z.infer<typeof correlationMatrixMetadataSchema>;
+
 // ─── Analysis Result Types ───────────────────────
 
 export type AnalysisType =
@@ -150,7 +191,9 @@ export type AnalysisType =
 	| "credit_risk"
 	| "sentiment_signal"
 	| "usd_model"
-	| "market_bias";
+	| "market_bias"
+	| "btc_signal"
+	| "correlation_matrix";
 
 export const analysisMetadataSchemas: Record<AnalysisType, z.ZodType> = {
 	liquidity_signal: liquiditySignalMetadataSchema,
@@ -159,6 +202,8 @@ export const analysisMetadataSchemas: Record<AnalysisType, z.ZodType> = {
 	sentiment_signal: sentimentSignalMetadataSchema,
 	usd_model: usdModelSignalMetadataSchema,
 	market_bias: marketBiasMetadataSchema,
+	btc_signal: btcSignalMetadataSchema,
+	correlation_matrix: correlationMatrixMetadataSchema,
 };
 
 /** Validate metadata for a given analysis type. Throws on invalid data. */
@@ -173,3 +218,5 @@ export type LiquiditySignal = "expanding" | "contracting" | "neutral";
 export type YieldCurveSignal = "bear_steepener" | "bull_steepener" | "bear_flattener" | "bull_flattener" | "neutral";
 export type CreditRiskSignal = "risk_on" | "risk_off" | "risk_off_confirmed";
 export type SentimentSignal = "extreme_fear" | "fear" | "neutral" | "greed" | "extreme_greed";
+export type BtcSignal = "bullish" | "bearish_alert" | "neutral";
+export type CorrelationRegime = "synchronized" | "independent" | "neutral";

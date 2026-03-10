@@ -2,6 +2,8 @@
 
 import { Command } from "commander";
 import { desc, eq } from "drizzle-orm";
+import { analyzeBtcSignal } from "./analyzers/btc-signal.js";
+import { computeCorrelationMatrix } from "./analyzers/correlation.js";
 import { analyzeLiquiditySignal } from "./analyzers/liquidity-signal.js";
 import { analyzeUsdModel } from "./analyzers/usd-model.js";
 import {
@@ -142,6 +144,26 @@ analyze
 		const db = initDb();
 		const today = new Date().toISOString().split("T")[0];
 		analyzeUsdModel(db, today);
+		closeDb();
+	});
+
+analyze
+	.command("btc")
+	.description("Analyze BTC signal (MA7d, volume, sharp drop alert)")
+	.action(() => {
+		const db = initDb();
+		const today = new Date().toISOString().split("T")[0];
+		analyzeBtcSignal(db, today);
+		closeDb();
+	});
+
+analyze
+	.command("correlation")
+	.description("Compute rolling correlation matrix (7d hourly + 30d daily)")
+	.action(() => {
+		const db = initDb();
+		const today = new Date().toISOString().split("T")[0];
+		computeCorrelationMatrix(db, today);
 		closeDb();
 	});
 

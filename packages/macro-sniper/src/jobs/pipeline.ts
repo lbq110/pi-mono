@@ -1,3 +1,5 @@
+import { analyzeBtcSignal } from "../analyzers/btc-signal.js";
+import { computeCorrelationMatrix } from "../analyzers/correlation.js";
 import { analyzeCreditRisk } from "../analyzers/credit-risk.js";
 import { analyzeLiquiditySignal } from "../analyzers/liquidity-signal.js";
 import { analyzeSentimentSignal } from "../analyzers/sentiment-signal.js";
@@ -23,6 +25,8 @@ export function runAnalysisPipeline(db: Db, date: string): void {
 	analyzeCreditRisk(db, date);
 	analyzeSentimentSignal(db, date);
 	analyzeUsdModel(db, date);
+	analyzeBtcSignal(db, date);
+	computeCorrelationMatrix(db, date);
 	computeMarketBias(db, date);
 
 	log.info({ date }, "Analysis pipeline complete");
@@ -51,6 +55,8 @@ function computeMarketBias(db: Db, date: string): void {
 	const curveSignal = getSignal("yield_curve") ?? "neutral";
 	const creditSignal = getSignal("credit_risk") ?? "risk_on";
 	const sentimentSignal = getSignal("sentiment_signal") ?? "neutral";
+	const btcSignal = getSignal("btc_signal") ?? "neutral";
+	const corrSignal = getSignal("correlation_matrix") ?? "neutral";
 
 	const conflicts: string[] = [];
 	const tags: string[] = [];
@@ -115,6 +121,26 @@ function computeMarketBias(db: Db, date: string): void {
 		tags.push("风险过高");
 	}
 
+	// Layer 4: BTC signal modifier
+	if (btcSignal === "bearish_alert") {
+		tags.push("BTC急跌预警(-10分)");
+		if (overallBias === "risk_on") {
+			conflicts.push("BTC 24h急跌与权益 risk_on 信号冲突");
+			confidence = confidence === "high" ? "medium" : "low";
+		}
+	} else if (btcSignal === "bullish" && corrSignal === "synchronized") {
+		tags.push("BTC突破MA7d+量能扩张(+5分,相关性同步)");
+	} else if (btcSignal === "bullish") {
+		tags.push("BTC突破MA7d+量能扩张(+5分)");
+	}
+
+	// Layer 5: Correlation regime annotation
+	if (corrSignal === "synchronized") {
+		tags.push("BTC-SPY高相关:同步风险资产模式");
+	} else if (corrSignal === "independent") {
+		tags.push("BTC-SPY低相关:BTC独立运行,权益信号中性");
+	}
+
 	// Check for funding tightness from liquidity metadata
 	const liqRow = allResults.find((r) => r.type === "liquidity_signal");
 	if (liqRow) {
@@ -132,6 +158,8 @@ function computeMarketBias(db: Db, date: string): void {
 			curve: curveSignal,
 			credit: creditSignal,
 			sentiment: sentimentSignal,
+			btc: btcSignal,
+			correlation: corrSignal,
 		},
 		conflicts,
 		tags,
