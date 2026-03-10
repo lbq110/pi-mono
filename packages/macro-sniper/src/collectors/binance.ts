@@ -50,6 +50,89 @@ export async function fetchBtcPrice(): Promise<{ price: number; date: string } |
 }
 
 /**
+ * Fetch BTC/USDT 24h statistics from Binance public API.
+ * Returns price change %, volume in quote currency (USDT), and current price.
+ */
+export async function fetchBtc24hStats(): Promise<{
+	price: number;
+	changePct24h: number;
+	volume24h: number;
+	date: string;
+} | null> {
+	const url = "https://api.binance.com/api/v3/ticker/24hr?symbol=BTCUSDT";
+
+	for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+		try {
+			const response = await fetch(url);
+			if (!response.ok) throw new Error(`Binance API returned ${response.status}`);
+
+			const json = (await response.json()) as {
+				lastPrice: string;
+				priceChangePercent: string;
+				quoteVolume: string;
+			};
+
+			const price = Number.parseFloat(json.lastPrice);
+			const changePct24h = Number.parseFloat(json.priceChangePercent);
+			const volume24h = Number.parseFloat(json.quoteVolume);
+
+			if (Number.isNaN(price)) return null;
+
+			return { price, changePct24h, volume24h, date: new Date().toISOString().split("T")[0] };
+		} catch (error) {
+			const isLastAttempt = attempt === MAX_RETRIES;
+			const message = error instanceof Error ? error.message : String(error);
+			log.warn(
+				{ attempt, error: message },
+				isLastAttempt ? "BTC 24h stats fetch failed" : "BTC 24h stats fetch failed, retrying",
+			);
+			if (isLastAttempt) return null;
+			await new Promise((resolve) => setTimeout(resolve, RETRY_BASE_DELAY_MS * 2 ** (attempt - 1)));
+		}
+	}
+	return null;
+}
+
+/**
+ * Fetch BTC/USDT 1h OHLCV klines from Binance.
+ * Returns up to `limit` candles (default 168 = 7 days).
+ */
+export async function fetchBtcHourlyKlines(
+	limit = 168,
+): Promise<{ datetime: string; open: number; high: number; low: number; close: number; volume: number }[]> {
+	const url = `https://api.binance.com/api/v3/klines?symbol=BTCUSDT&interval=1h&limit=${limit}`;
+
+	for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+		try {
+			const response = await fetch(url);
+			if (!response.ok) throw new Error(`Binance API returned ${response.status}`);
+
+			// Kline format: [openTime, open, high, low, close, volume, closeTime, ...]
+			const json = (await response.json()) as [number, string, string, string, string, string, ...unknown[]][];
+
+			return json.map((k) => ({
+				datetime: new Date(k[0]).toISOString(),
+				open: Number.parseFloat(k[1]),
+				high: Number.parseFloat(k[2]),
+				low: Number.parseFloat(k[3]),
+				close: Number.parseFloat(k[4]),
+				volume: Number.parseFloat(k[5]),
+			}));
+		} catch (error) {
+			const isLastAttempt = attempt === MAX_RETRIES;
+			const message = error instanceof Error ? error.message : String(error);
+			log.warn(
+				{ attempt, error: message },
+				isLastAttempt ? "BTC klines fetch failed" : "BTC klines fetch failed, retrying",
+			);
+			if (isLastAttempt) return [];
+			await new Promise((resolve) => setTimeout(resolve, RETRY_BASE_DELAY_MS * 2 ** (attempt - 1)));
+		}
+	}
+	return [];
+}
+
+/**
  * Fetch BTC/USDT futures open interest from Binance Futures public API.
  * No API key required.
  */

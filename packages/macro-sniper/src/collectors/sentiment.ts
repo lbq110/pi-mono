@@ -1,7 +1,7 @@
 import type { Db } from "../db/client.js";
 import { sentimentSnapshots } from "../db/schema.js";
 import { createChildLogger } from "../logger.js";
-import { fetchBtcOpenInterest, fetchBtcPrice } from "./binance.js";
+import { fetchBtc24hStats, fetchBtcOpenInterest } from "./binance.js";
 import { fetchFredSeries } from "./fred.js";
 import { fetchYahooQuote } from "./yahoo.js";
 
@@ -74,12 +74,14 @@ export async function collectSentiment(
 		log.error({ error: message }, "Failed to collect Fear & Greed index");
 	}
 
-	// BTC price from Binance (public, no key required)
+	// BTC 24h stats from Binance (price + changePct + volume)
 	try {
-		const btc = await fetchBtcPrice();
-		if (btc) {
-			upsertSentiment(db, "binance", "btc_price", btc.price, today);
-			log.info({ btcPrice: btc.price }, "BTC price collected from Binance");
+		const stats = await fetchBtc24hStats();
+		if (stats) {
+			upsertSentiment(db, "binance", "btc_price", stats.price, today);
+			upsertSentiment(db, "binance", "btc_change_pct_24h", stats.changePct24h, today);
+			upsertSentiment(db, "binance", "btc_volume_24h", stats.volume24h, today);
+			log.info({ btcPrice: stats.price, changePct24h: stats.changePct24h }, "BTC price collected from Binance");
 		}
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);

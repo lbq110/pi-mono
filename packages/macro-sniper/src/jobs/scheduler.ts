@@ -1,6 +1,7 @@
 import cron from "node-cron";
 import {
 	collectCreditSpreads,
+	collectHourlyPrices,
 	collectLiquidity,
 	collectSentiment,
 	collectUsdModelData,
@@ -39,6 +40,7 @@ export async function runFullPipeline(streamText: (prompt: string, model: string
 			fredApiKey: config.FRED_API_KEY,
 		});
 		await collectUsdModelData(db, config.FRED_API_KEY);
+		await collectHourlyPrices(db);
 		finishJobRun(db, collectRunId, "success");
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
@@ -160,7 +162,7 @@ export function startScheduler(streamText: (prompt: string, model: string) => Pr
 		),
 	);
 
-	// Sentiment collection every hour
+	// Sentiment + hourly prices collection every hour
 	scheduledTasks.push(
 		cron.schedule(
 			"0 * * * *",
@@ -169,6 +171,9 @@ export function startScheduler(streamText: (prompt: string, model: string) => Pr
 				const db = getDb();
 				collectSentiment(db, { fredApiKey: config.FRED_API_KEY }).catch((err) =>
 					log.error({ error: err instanceof Error ? err.message : String(err) }, "Sentiment collection failed"),
+				);
+				collectHourlyPrices(db).catch((err) =>
+					log.error({ error: err instanceof Error ? err.message : String(err) }, "Hourly price collection failed"),
 				);
 			},
 			{ timezone },

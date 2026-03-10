@@ -6,6 +6,7 @@ import { analyzeLiquiditySignal } from "./analyzers/liquidity-signal.js";
 import { analyzeUsdModel } from "./analyzers/usd-model.js";
 import {
 	collectCreditSpreads,
+	collectHourlyPrices,
 	collectLiquidity,
 	collectSentiment,
 	collectUsdModelData,
@@ -87,6 +88,15 @@ collect
 	});
 
 collect
+	.command("hourly")
+	.description("Collect hourly OHLCV data (SPY/QQQ/IWM/DXY/BTC) + BTC 24h stats")
+	.action(async () => {
+		const db = initDb();
+		await collectHourlyPrices(db);
+		closeDb();
+	});
+
+collect
 	.command("all")
 	.description("Collect all data sources")
 	.action(async () => {
@@ -95,10 +105,9 @@ collect
 		await collectLiquidity(db, config.FRED_API_KEY);
 		await collectYields(db, config.FRED_API_KEY);
 		await collectCreditSpreads(db);
-		await collectSentiment(db, {
-			fredApiKey: config.FRED_API_KEY,
-		});
+		await collectSentiment(db, { fredApiKey: config.FRED_API_KEY });
 		await collectUsdModelData(db, config.FRED_API_KEY);
+		await collectHourlyPrices(db);
 		closeDb();
 	});
 
