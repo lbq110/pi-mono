@@ -10,6 +10,8 @@ import {
 	liquiditySnapshots,
 	orders,
 	positions,
+	predictionResults,
+	predictionSnapshots,
 	sentimentSnapshots,
 	tradeLog,
 	yieldSnapshots,
@@ -195,4 +197,49 @@ export function runMigrations(dbPath?: string): void {
 	`);
 
 	db.run(sql`CREATE INDEX IF NOT EXISTS idx_trade_log_symbol ON trade_log(symbol, created_at)`);
+
+	// ─── Prediction accuracy tracking ────────────
+
+	db.run(sql`
+		CREATE TABLE IF NOT EXISTS ${predictionSnapshots} (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			report_date TEXT NOT NULL,
+			predicted_bias TEXT NOT NULL,
+			predicted_btc TEXT,
+			predicted_yield TEXT,
+			predicted_usd TEXT,
+			spy_price REAL,
+			qqq_price REAL,
+			iwm_price REAL,
+			btc_price REAL,
+			dxy_price REAL,
+			signals_snapshot TEXT,
+			created_at TEXT NOT NULL
+		)
+	`);
+
+	db.run(sql`CREATE UNIQUE INDEX IF NOT EXISTS uq_prediction_report_date ON prediction_snapshots(report_date)`);
+	db.run(sql`CREATE INDEX IF NOT EXISTS idx_prediction_date ON prediction_snapshots(report_date)`);
+
+	db.run(sql`
+		CREATE TABLE IF NOT EXISTS ${predictionResults} (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			snapshot_id INTEGER NOT NULL,
+			check_date TEXT NOT NULL,
+			spy_return REAL,
+			qqq_return REAL,
+			iwm_return REAL,
+			btc_return REAL,
+			dxy_return REAL,
+			bias_correct INTEGER,
+			btc_correct INTEGER,
+			yield_rotation_correct INTEGER,
+			usd_correct INTEGER,
+			overall_accuracy REAL,
+			optimization_hints TEXT,
+			created_at TEXT NOT NULL
+		)
+	`);
+
+	db.run(sql`CREATE INDEX IF NOT EXISTS idx_pred_results_snapshot ON prediction_results(snapshot_id)`);
 }

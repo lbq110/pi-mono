@@ -125,6 +125,42 @@ export const tradeLog = sqliteTable("trade_log", {
 	createdAt: text("created_at").notNull(),
 });
 
+// ─── Prediction Accuracy Tracking ────────────────
+
+export const predictionSnapshots = sqliteTable("prediction_snapshots", {
+	id: integer("id").primaryKey({ autoIncrement: true }),
+	reportDate: text("report_date").notNull(), // "YYYY-MM-DD"
+	predictedBias: text("predicted_bias").notNull(), // market_bias signal
+	predictedBtc: text("predicted_btc"), // btc_signal
+	predictedYield: text("predicted_yield"), // yield_curve signal
+	predictedUsd: text("predicted_usd"), // usd_model signal
+	spyPrice: real("spy_price"),
+	qqqPrice: real("qqq_price"),
+	iwmPrice: real("iwm_price"),
+	btcPrice: real("btc_price"),
+	dxyPrice: real("dxy_price"),
+	signalsSnapshot: text("signals_snapshot", { mode: "json" }), // full analysis_results snapshot
+	createdAt: text("created_at").notNull(),
+});
+
+export const predictionResults = sqliteTable("prediction_results", {
+	id: integer("id").primaryKey({ autoIncrement: true }),
+	snapshotId: integer("snapshot_id").notNull(),
+	checkDate: text("check_date").notNull(), // T+5 date
+	spyReturn: real("spy_return"), // 5-day return %
+	qqqReturn: real("qqq_return"),
+	iwmReturn: real("iwm_return"),
+	btcReturn: real("btc_return"),
+	dxyReturn: real("dxy_return"),
+	biasCorrect: integer("bias_correct"), // 1/0
+	btcCorrect: integer("btc_correct"),
+	yieldRotationCorrect: integer("yield_rotation_correct"), // IWM vs QQQ direction
+	usdCorrect: integer("usd_correct"),
+	overallAccuracy: real("overall_accuracy"), // 0.0–1.0
+	optimizationHints: text("optimization_hints", { mode: "json" }),
+	createdAt: text("created_at").notNull(),
+});
+
 // ─── Job Runs (written by job scheduler) ─────────
 
 export const jobRuns = sqliteTable("job_runs", {

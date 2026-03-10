@@ -18,6 +18,12 @@ import { loadConfig } from "./config.js";
 import { closeDb, getDb } from "./db/client.js";
 import { runMigrations } from "./db/migrate.js";
 import { analysisResults, generatedReports } from "./db/schema.js";
+import {
+	checkPendingPredictions,
+	createPredictionSnapshot,
+	formatAccuracyReport,
+} from "./executors/accuracy-tracker.js";
+import { previewScores, runTradeEngine } from "./executors/trade-engine.js";
 import { runAnalysisPipeline } from "./jobs/pipeline.js";
 import { getRecentJobRuns } from "./jobs/run-tracker.js";
 import { runFullPipeline, startScheduler, stopScheduler } from "./jobs/scheduler.js";
@@ -386,6 +392,99 @@ program
 	.action(() => {
 		initDb();
 		console.log("Database migrated successfully.");
+		closeDb();
+	});
+
+// ─── trade commands ──────────────────────────────
+
+const trade = program.command("trade").description("Paper trading execution");
+
+trade
+	.command("preview")
+	.description("Preview signal scores without executing trades")
+	.action(() => {
+		const db = initDb();
+		const scores = previewScores(db);
+		const { SPY, QQQ, IWM, BTCUSD, inflationRegime, marketBias, marketBiasConfidence } = scores;
+		console.log(`\n── Market Context ──`);
+		console.log(`  Bias:      ${marketBias} (${marketBiasConfidence})`);
+		console.log(
+			`  Inflation: ${inflationRegime.regime} | BEI10y=${inflationRegime.bei10y.toFixed(2)}% | GLD5d=${inflationRegime.gld5dMomentum.toFixed(2)}% | GLD20d=${inflationRegime.gld20dTrend.toFixed(2)}%`,
+		);
+		console.log(`\n── Instrument Scores ──`);
+		for (const s of [SPY, QQQ, IWM, BTCUSD]) {
+			const veto = s.creditVeto ? " [CREDIT_VETO]" : s.btcSyncVeto ? " [BTC_SYNC_VETO]" : "";
+			console.log(
+				`  ${s.symbol.padEnd(8)} score=${s.finalScore.toFixed(1).padStart(7)}  ${s.direction.padEnd(5)}  ${(s.sizeMultiplier * 100).toFixed(0).padStart(3)}%  $${s.notionalFinal.toFixed(0).padStart(6)}${veto}`,
+			);
+			console.log(
+				`           liq=${s.evidence.liquidity.contribution.toFixed(1)} curve=${s.evidence.yieldCurve.contribution.toFixed(1)} sent=${s.evidence.sentiment.contribution.toFixed(1)} usd=${s.evidence.usdModel.contribution.toFixed(1)} btcmod=${s.evidence.btcEquityModifier}`,
+			);
+			if (s.evidence.rotationNote !== "n/a for BTC") console.log(`           rotation: ${s.evidence.rotationNote}`);
+			if (s.evidence.conflictNote) console.log(`           conflict: ${s.evidence.conflictNote}`);
+			if (s.evidence.corrRegimeNote) console.log(`           corr: ${s.evidence.corrRegimeNote}`);
+		}
+		closeDb();
+	});
+
+trade
+	.command("run")
+	.description("Execute trades based on current signals")
+	.action(async () => {
+		const db = initDb();
+		const result = await runTradeEngine(db);
+		console.log(`\n── Trade Execution ──`);
+		console.log(`  Market open: ${result.marketOpen}`);
+		console.log(`  ${result.summary}`);
+		console.log(`\n── Decisions ──`);
+		for (const d of result.decisions) {
+			console.log(
+				`  ${d.symbol.padEnd(8)} ${d.action.padEnd(12)} ${d.currentDirection} → ${d.targetDirection}  $${d.targetNotional.toFixed(0)}`,
+			);
+			console.log(`           ${d.reason}`);
+		}
+		console.log(`\n── Orders ──`);
+		for (const o of result.orders) {
+			if (o.status !== "skipped") {
+				console.log(
+					`  ${o.symbol.padEnd(8)} ${o.side}  status=${o.status}  orderId=${o.alpacaOrderId ?? "n/a"}${o.error ? `  error=${o.error}` : ""}`,
+				);
+			}
+		}
+		closeDb();
+	});
+
+// ─── accuracy commands ────────────────────────────
+
+const accuracy = program.command("accuracy").description("Prediction accuracy tracking");
+
+accuracy
+	.command("report")
+	.description("Show prediction accuracy report with optimization hints")
+	.action(() => {
+		const db = initDb();
+		console.log(formatAccuracyReport(db));
+		closeDb();
+	});
+
+accuracy
+	.command("check")
+	.description("Manually trigger T+5 accuracy evaluation for pending predictions")
+	.action(() => {
+		const db = initDb();
+		checkPendingPredictions(db);
+		console.log("Accuracy check complete.");
+		closeDb();
+	});
+
+accuracy
+	.command("snapshot")
+	.description("Manually create a prediction snapshot for today")
+	.action(() => {
+		const db = initDb();
+		const today = new Date().toISOString().split("T")[0];
+		createPredictionSnapshot(db, today);
+		console.log(`Snapshot created for ${today}.`);
 		closeDb();
 	});
 

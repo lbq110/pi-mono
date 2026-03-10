@@ -9,6 +9,8 @@ import {
 } from "../collectors/index.js";
 import { loadConfig } from "../config.js";
 import { getDb } from "../db/client.js";
+import { checkPendingPredictions } from "../executors/accuracy-tracker.js";
+import { runTradeEngine } from "../executors/trade-engine.js";
 import { createChildLogger } from "../logger.js";
 import { notifyViaMom } from "../notifications/mom-events.js";
 import { postToSlack } from "../notifications/slack.js";
@@ -65,7 +67,19 @@ export async function runFullPipeline(streamText: (prompt: string, model: string
 		const content = await generateDailyReport(db, today, streamText, config.LLM_MODEL_FAST);
 		finishJobRun(db, reportRunId, "success");
 
-		// Step 4: Notify (Slack direct > Mom fallback)
+		// Step 4: Trade execution
+		const tradeRunId = startJobRun(db, "trade");
+		try {
+			const result = await runTradeEngine(db);
+			finishJobRun(db, tradeRunId, "success");
+			log.info({ summary: result.summary }, "Trade engine executed");
+		} catch (error) {
+			const message = error instanceof Error ? error.message : String(error);
+			finishJobRun(db, tradeRunId, "error", message);
+			log.error({ error: message }, "Trade engine failed (non-fatal, continuing to notify)");
+		}
+
+		// Step 5: Notify (Slack direct > Mom fallback)
 		const notifyRunId = startJobRun(db, "notify");
 		try {
 			let notified = false;
@@ -157,6 +171,44 @@ export function startScheduler(streamText: (prompt: string, model: string) => Pr
 						"Credit spread collection failed",
 					),
 				);
+			},
+			{ timezone },
+		),
+	);
+
+	// T+5 prediction accuracy check at 09:30 ET (after market open, prices settled)
+	scheduledTasks.push(
+		cron.schedule(
+			"30 9 * * 1-5",
+			() => {
+				const db = getDb();
+				try {
+					checkPendingPredictions(db);
+				} catch (err) {
+					log.error(
+						{ error: err instanceof Error ? err.message : String(err) },
+						"Prediction accuracy check failed",
+					);
+				}
+			},
+			{ timezone },
+		),
+	);
+
+	// Hourly BTC trade check (for synchronized+risk_off veto and BTC-specific signals)
+	scheduledTasks.push(
+		cron.schedule(
+			"5 * * * *",
+			() => {
+				const db = getDb();
+				runTradeEngine(db)
+					.then((r) => log.info({ summary: r.summary }, "Hourly BTC trade check done"))
+					.catch((err) =>
+						log.error(
+							{ error: err instanceof Error ? err.message : String(err) },
+							"Hourly BTC trade check failed",
+						),
+					);
 			},
 			{ timezone },
 		),

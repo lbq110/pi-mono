@@ -7,6 +7,7 @@ import { analyzeUsdModel } from "../analyzers/usd-model.js";
 import { analyzeYieldCurve } from "../analyzers/yield-curve.js";
 import type { Db } from "../db/client.js";
 import { analysisResults } from "../db/schema.js";
+import { createPredictionSnapshot } from "../executors/accuracy-tracker.js";
 import { createChildLogger } from "../logger.js";
 import type { MarketBiasMetadata } from "../types.js";
 import { validateAnalysisMetadata } from "../types.js";
@@ -30,6 +31,16 @@ export function runAnalysisPipeline(db: Db, date: string): void {
 	computeMarketBias(db, date);
 
 	log.info({ date }, "Analysis pipeline complete");
+
+	// Store prediction snapshot for T+5 accuracy tracking
+	try {
+		createPredictionSnapshot(db, date);
+	} catch (err) {
+		log.warn(
+			{ error: err instanceof Error ? err.message : String(err) },
+			"Failed to create prediction snapshot (non-fatal)",
+		);
+	}
 }
 
 /**

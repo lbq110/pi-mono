@@ -1,4 +1,89 @@
-/** Placeholder types for Phase 3 trade execution. */
+// ─── Inflation Regime ─────────────────────────────
+
+export interface InflationRegime {
+	regime: "hot" | "warm" | "cool";
+	bei10y: number; // T10YIE value
+	gld5dMomentum: number; // GLD 5-day return %
+	gld20dTrend: number; // GLD 20-day return %
+}
+
+// ─── Sub-Score (per signal source) ───────────────
+
+export interface SubScore {
+	rawValue: number; // original signal value
+	normalized: number; // mapped to [-1, 1]
+	weight: number; // assigned weight for this instrument
+	contribution: number; // normalized × weight × 100
+	note: string; // human-readable explanation
+}
+
+// ─── Per-Instrument Score ─────────────────────────
+
+export type TradedSymbol = "SPY" | "QQQ" | "IWM" | "BTCUSD";
+
+export interface InstrumentScore {
+	symbol: TradedSymbol;
+	baseScore: number; // weighted sum × 100, before modifiers
+	finalScore: number; // after BTC equity modifier
+	direction: "long" | "flat";
+	sizeMultiplier: number; // 0 | 0.5 | 0.75 | 1.0
+	notionalTarget: number; // from config (SPY=$1000, etc.)
+	notionalFinal: number; // notionalTarget × sizeMultiplier
+	creditVeto: boolean; // credit_risk = risk_off_confirmed
+	btcSyncVeto: boolean; // BTC: synchronized + risk_off
+	inflationRegime: InflationRegime;
+	evidence: {
+		liquidity: SubScore;
+		yieldCurve: SubScore;
+		sentiment: SubScore;
+		usdModel: SubScore;
+		btcSignal?: SubScore; // BTC only
+		corrRegime?: SubScore; // BTC only
+		btcEquityModifier: number; // +5 / -10 / 0 for equities
+		rotationNote: string; // yield × inflation rotation detail
+		conflictNote: string | null; // set if market_bias = conflicted
+		corrRegimeNote: string | null; // correlation regime annotation
+	};
+}
+
+// ─── Trade Decision ───────────────────────────────
+
+export type TradeAction = "buy" | "sell" | "hold" | "resize_up" | "resize_down";
+
+export interface TradeDecision {
+	symbol: string;
+	currentDirection: "long" | "flat";
+	targetDirection: "long" | "flat";
+	currentQty: number;
+	currentMarketValue: number;
+	targetNotional: number;
+	action: TradeAction;
+	score: InstrumentScore;
+	reason: string;
+}
+
+// ─── Trade Execution Result ───────────────────────
+
+export interface OrderOutcome {
+	symbol: string;
+	side: "buy" | "sell";
+	notional: number | undefined;
+	qty: number | undefined;
+	alpacaOrderId: string | null;
+	status: "filled" | "submitted" | "skipped" | "failed";
+	error?: string;
+}
+
+export interface TradeExecutionResult {
+	date: string;
+	marketOpen: boolean;
+	decisions: TradeDecision[];
+	orders: OrderOutcome[];
+	skippedSymbols: string[];
+	summary: string;
+}
+
+// ─── Legacy placeholders (kept for compatibility) ─
 
 export interface TradeOrder {
 	symbol: string;
