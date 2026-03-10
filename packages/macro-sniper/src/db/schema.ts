@@ -125,6 +125,22 @@ export const tradeLog = sqliteTable("trade_log", {
 	createdAt: text("created_at").notNull(),
 });
 
+// ─── Risk Events (circuit breaker log) ───────────
+
+export const riskEvents = sqliteTable("risk_events", {
+	id: integer("id").primaryKey({ autoIncrement: true }),
+	eventType: text("event_type").notNull(), // "stop_loss_l1"
+	symbol: text("symbol").notNull(),
+	triggerValue: real("trigger_value").notNull(), // actual pnl% that triggered (e.g. -0.092)
+	threshold: real("threshold").notNull(), // configured threshold (e.g. -0.08)
+	action: text("action").notNull(), // "closed_position"
+	qtyAtClose: real("qty_at_close"),
+	priceAtClose: real("price_at_close"),
+	pnlAtClose: real("pnl_at_close"), // unrealized_pl at trigger
+	cooldownUntil: text("cooldown_until"), // ISO timestamp, no re-entry before this
+	createdAt: text("created_at").notNull(),
+});
+
 // ─── Prediction Accuracy Tracking ────────────────
 
 export const predictionSnapshots = sqliteTable("prediction_snapshots", {

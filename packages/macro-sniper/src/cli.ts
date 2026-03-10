@@ -23,6 +23,12 @@ import {
 	createPredictionSnapshot,
 	formatAccuracyReport,
 } from "./executors/accuracy-tracker.js";
+import {
+	checkStopLoss,
+	getLastStopLossEvent,
+	isInStopLossCooldown,
+	STOP_LOSS_THRESHOLD,
+} from "./executors/risk-manager.js";
 import { previewScores, runTradeEngine } from "./executors/trade-engine.js";
 import { runAnalysisPipeline } from "./jobs/pipeline.js";
 import { getRecentJobRuns } from "./jobs/run-tracker.js";
@@ -449,6 +455,56 @@ trade
 				console.log(
 					`  ${o.symbol.padEnd(8)} ${o.side}  status=${o.status}  orderId=${o.alpacaOrderId ?? "n/a"}${o.error ? `  error=${o.error}` : ""}`,
 				);
+			}
+		}
+		closeDb();
+	});
+
+// ─── risk commands ────────────────────────────────
+
+const risk = program.command("risk").description("Risk management (L1 stop-loss)");
+
+risk
+	.command("check")
+	.description("Manually run L1 stop-loss check on all open positions")
+	.action(async () => {
+		const db = initDb();
+		const result = await checkStopLoss(db);
+		if (!result.triggered) {
+			console.log(`No stop-loss breaches (threshold: ${(STOP_LOSS_THRESHOLD * 100).toFixed(0)}%).`);
+		} else {
+			console.log(`\n── L1 Stop-Loss Events ──`);
+			for (const e of result.events) {
+				const pct = (e.pnlPct * 100).toFixed(2);
+				console.log(
+					`  ${e.symbol.padEnd(8)} pnl=${pct}%  qty=${e.qty.toFixed(4)}  price=$${e.price.toFixed(2)}  closed=${e.closed}${e.error ? `  error=${e.error}` : ""}`,
+				);
+			}
+		}
+		closeDb();
+	});
+
+risk
+	.command("status")
+	.description("Show risk event history and current cooldown status")
+	.action(() => {
+		const db = initDb();
+		const symbols = ["SPY", "QQQ", "IWM", "BTCUSD"];
+		console.log(`\n── Risk Status (L1 threshold: ${(STOP_LOSS_THRESHOLD * 100).toFixed(0)}%) ──`);
+		for (const sym of symbols) {
+			const inCooldown = isInStopLossCooldown(db, sym);
+			const lastEvent = getLastStopLossEvent(db, sym);
+			if (lastEvent) {
+				const pct = (lastEvent.triggerValue * 100).toFixed(2);
+				const cooldownStr =
+					inCooldown && lastEvent.cooldownUntil
+						? `cooldown until ${new Date(lastEvent.cooldownUntil).toLocaleString("zh-CN", { timeZone: "America/New_York", hour12: false })}`
+						: "no cooldown";
+				console.log(
+					`  ${sym.padEnd(8)} last stop-loss: ${pct}% on ${lastEvent.createdAt.slice(0, 16)}  ${cooldownStr}`,
+				);
+			} else {
+				console.log(`  ${sym.padEnd(8)} no stop-loss events`);
 			}
 		}
 		closeDb();

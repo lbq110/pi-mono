@@ -2,6 +2,7 @@ import { getAlpacaClient } from "../broker/alpaca.js";
 import type { Db } from "../db/client.js";
 import { orders, positions, tradeLog } from "../db/schema.js";
 import { createChildLogger } from "../logger.js";
+import { isInStopLossCooldown } from "./risk-manager.js";
 import { scoreAllInstruments } from "./signal-scorer.js";
 import type { InstrumentScore, OrderOutcome, TradeDecision, TradedSymbol, TradeExecutionResult } from "./types.js";
 
@@ -136,6 +137,22 @@ async function executeDecision(db: Db, decision: TradeDecision, marketOpen: bool
 			alpacaOrderId: null,
 			status: "skipped",
 		};
+	}
+
+	// L1 stop-loss cooldown: block re-entry for 24h after a stop-loss event
+	if (decision.action === "buy" || decision.action === "resize_up") {
+		if (isInStopLossCooldown(db, decision.symbol)) {
+			log.info({ symbol: decision.symbol }, "Buy skipped: L1 stop-loss cooldown active");
+			return {
+				symbol: decision.symbol,
+				side: "buy",
+				notional: decision.targetNotional,
+				qty: undefined,
+				alpacaOrderId: null,
+				status: "skipped",
+				error: "L1 stop-loss cooldown active (24h)",
+			};
+		}
 	}
 
 	// Record order intent in DB

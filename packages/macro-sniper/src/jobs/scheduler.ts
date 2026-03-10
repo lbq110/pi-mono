@@ -10,6 +10,7 @@ import {
 import { loadConfig } from "../config.js";
 import { getDb } from "../db/client.js";
 import { checkPendingPredictions } from "../executors/accuracy-tracker.js";
+import { checkStopLoss } from "../executors/risk-manager.js";
 import { runTradeEngine } from "../executors/trade-engine.js";
 import { createChildLogger } from "../logger.js";
 import { notifyViaMom } from "../notifications/mom-events.js";
@@ -195,7 +196,27 @@ export function startScheduler(streamText: (prompt: string, model: string) => Pr
 		),
 	);
 
-	// Hourly BTC trade check (for synchronized+risk_off veto and BTC-specific signals)
+	// Hourly risk check: L1 stop-loss at :00 (before trade engine at :05)
+	scheduledTasks.push(
+		cron.schedule(
+			"0 * * * *",
+			() => {
+				const db = getDb();
+				checkStopLoss(db)
+					.then((r) => {
+						if (r.triggered) {
+							log.warn({ events: r.events.length }, "L1 stop-loss triggered during hourly check");
+						}
+					})
+					.catch((err) =>
+						log.error({ error: err instanceof Error ? err.message : String(err) }, "L1 stop-loss check failed"),
+					);
+			},
+			{ timezone },
+		),
+	);
+
+	// Hourly BTC trade check at :05 (after risk check at :00)
 	scheduledTasks.push(
 		cron.schedule(
 			"5 * * * *",

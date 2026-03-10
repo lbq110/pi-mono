@@ -12,6 +12,7 @@ import {
 	positions,
 	predictionResults,
 	predictionSnapshots,
+	riskEvents,
 	sentimentSnapshots,
 	tradeLog,
 	yieldSnapshots,
@@ -242,4 +243,25 @@ export function runMigrations(dbPath?: string): void {
 	`);
 
 	db.run(sql`CREATE INDEX IF NOT EXISTS idx_pred_results_snapshot ON prediction_results(snapshot_id)`);
+
+	// ─── Risk events ──────────────────────────────
+
+	db.run(sql`
+		CREATE TABLE IF NOT EXISTS ${riskEvents} (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			event_type TEXT NOT NULL,
+			symbol TEXT NOT NULL,
+			trigger_value REAL NOT NULL,
+			threshold REAL NOT NULL,
+			action TEXT NOT NULL,
+			qty_at_close REAL,
+			price_at_close REAL,
+			pnl_at_close REAL,
+			cooldown_until TEXT,
+			created_at TEXT NOT NULL
+		)
+	`);
+
+	db.run(sql`CREATE INDEX IF NOT EXISTS idx_risk_events_symbol ON risk_events(symbol, created_at)`);
+	db.run(sql`CREATE INDEX IF NOT EXISTS idx_risk_events_cooldown ON risk_events(symbol, cooldown_until)`);
 }
