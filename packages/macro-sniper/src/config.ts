@@ -19,8 +19,31 @@ const envSchema = z.object({
 
 	// Optional data sources / API keys
 	GEMINI_API_KEY: z.string().optional(),
-	BINANCE_API_KEY: z.string().optional(), // Reserved for Phase 3 trade execution
+	BINANCE_API_KEY: z.string().optional(),
 	POLYGON_API_KEY: z.string().optional(),
+
+	// Alpaca Paper Trading (Phase 3)
+	ALPACA_API_KEY: z.string().optional(),
+	ALPACA_API_SECRET: z.string().optional(),
+	ALPACA_BASE_URL: z.string().default("https://paper-api.alpaca.markets/v2"),
+
+	// Paper trading position sizing (USD per instrument)
+	PAPER_POSITION_SPY: z
+		.string()
+		.default("1000")
+		.transform((v) => Number.parseFloat(v)),
+	PAPER_POSITION_QQQ: z
+		.string()
+		.default("800")
+		.transform((v) => Number.parseFloat(v)),
+	PAPER_POSITION_IWM: z
+		.string()
+		.default("600")
+		.transform((v) => Number.parseFloat(v)),
+	PAPER_POSITION_BTC: z
+		.string()
+		.default("500")
+		.transform((v) => Number.parseFloat(v)),
 
 	// Database
 	DATABASE_PATH: z.string().default("./data/macro-sniper.db"),

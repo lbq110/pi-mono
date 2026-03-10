@@ -358,6 +358,69 @@ program
 		closeDb();
 	});
 
+// ─── portfolio commands ───────────────────────────
+
+const portfolio = program.command("portfolio").description("Paper trading portfolio management");
+
+portfolio
+	.command("status")
+	.description("Show current positions and account summary")
+	.action(async () => {
+		const { getPortfolioSummary } = await import("./broker/alpaca.js");
+		const summary = await getPortfolioSummary();
+		console.log("\n── Account ──");
+		console.log(`  Equity:        $${summary.equity.toLocaleString("en-US", { minimumFractionDigits: 2 })}`);
+		console.log(`  Cash:          $${summary.cash.toLocaleString("en-US", { minimumFractionDigits: 2 })}`);
+		console.log(`  Buying Power:  $${summary.buyingPower.toLocaleString("en-US", { minimumFractionDigits: 2 })}`);
+		const pnlSign = summary.totalUnrealizedPnl >= 0 ? "+" : "";
+		console.log(`  Unrealized P&L: ${pnlSign}$${summary.totalUnrealizedPnl.toFixed(2)}`);
+
+		if (summary.positions.length === 0) {
+			console.log("\n── Positions: none ──");
+		} else {
+			console.log("\n── Positions ──");
+			for (const p of summary.positions) {
+				const pnlSign = p.unrealizedPnl >= 0 ? "+" : "";
+				console.log(
+					`  ${p.symbol.padEnd(8)} ${p.direction.padEnd(6)} qty=${p.qty.toFixed(4).padStart(10)}` +
+						`  cost=$${p.avgCost.toFixed(2)}  now=$${p.currentPrice.toFixed(2)}` +
+						`  P&L: ${pnlSign}$${p.unrealizedPnl.toFixed(2)} (${pnlSign}${p.unrealizedPnlPct.toFixed(2)}%)`,
+				);
+			}
+		}
+	});
+
+portfolio
+	.command("orders")
+	.description("Show recent orders")
+	.action(async () => {
+		const { getAlpacaClient } = await import("./broker/alpaca.js");
+		const client = getAlpacaClient();
+		const orders = await client.getOrders("all", 20);
+		console.log("\n── Recent Orders (last 20) ──");
+		if (orders.length === 0) {
+			console.log("  No orders found.");
+		} else {
+			for (const o of orders) {
+				const price = o.filled_avg_price ? `@$${Number.parseFloat(o.filled_avg_price).toFixed(2)}` : "";
+				console.log(
+					`  ${o.created_at.slice(0, 19)}  ${o.symbol.padEnd(8)}  ${o.side.padEnd(5)}  qty=${o.qty.padStart(8)}  ${o.status.padEnd(10)}  ${price}`,
+				);
+			}
+		}
+	});
+
+portfolio
+	.command("reset")
+	.description("Close all positions and cancel all orders")
+	.action(async () => {
+		const { getAlpacaClient } = await import("./broker/alpaca.js");
+		const client = getAlpacaClient();
+		await client.cancelAllOrders();
+		await client.closeAllPositions();
+		console.log("All positions closed and orders cancelled.");
+	});
+
 // ─── Parse and execute ───────────────────────────
 
 program.parse();

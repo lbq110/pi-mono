@@ -1,4 +1,4 @@
-import { integer, real, sqliteTable, text } from "drizzle-orm/sqlite-core";
+import { integer, real, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
 
 // ─── Raw Data Tables (written by collectors) ─────
 
@@ -62,6 +62,66 @@ export const generatedReports = sqliteTable("generated_reports", {
 	reportType: text("report_type").notNull(),
 	content: text("content").notNull(),
 	model: text("model").notNull(),
+	createdAt: text("created_at").notNull(),
+});
+
+// ─── Hourly Prices (written by hourly collector) ─
+
+export const hourlyPrices = sqliteTable(
+	"hourly_prices",
+	{
+		id: integer("id").primaryKey({ autoIncrement: true }),
+		symbol: text("symbol").notNull(),
+		datetime: text("datetime").notNull(), // ISO 8601 e.g. "2026-03-10T14:00:00Z"
+		open: real("open").notNull(),
+		high: real("high").notNull(),
+		low: real("low").notNull(),
+		close: real("close").notNull(),
+		volume: real("volume").notNull(),
+	},
+	(t) => [uniqueIndex("uq_hourly_symbol_datetime").on(t.symbol, t.datetime)],
+);
+
+// ─── Paper Trading (written by executors) ────────
+
+export const positions = sqliteTable(
+	"positions",
+	{
+		id: integer("id").primaryKey({ autoIncrement: true }),
+		symbol: text("symbol").notNull(), // SPY, QQQ, IWM, BTCUSD
+		direction: text("direction").notNull(), // "long" | "flat"
+		quantity: real("quantity").notNull().default(0),
+		avgCost: real("avg_cost").notNull().default(0),
+		currentPrice: real("current_price").notNull().default(0),
+		unrealizedPnl: real("unrealized_pnl").notNull().default(0),
+		openedAt: text("opened_at"),
+		updatedAt: text("updated_at").notNull(),
+	},
+	(t) => [uniqueIndex("uq_position_symbol").on(t.symbol)],
+);
+
+export const orders = sqliteTable("orders", {
+	id: integer("id").primaryKey({ autoIncrement: true }),
+	alpacaOrderId: text("alpaca_order_id"),
+	symbol: text("symbol").notNull(),
+	side: text("side").notNull(), // "buy" | "sell"
+	quantity: real("quantity").notNull(),
+	orderType: text("order_type").notNull().default("market"),
+	status: text("status").notNull(), // "pending" | "filled" | "cancelled" | "failed"
+	filledPrice: real("filled_price"),
+	signalSnapshot: text("signal_snapshot", { mode: "json" }), // evidence chain JSON
+	createdAt: text("created_at").notNull(),
+	filledAt: text("filled_at"),
+});
+
+export const tradeLog = sqliteTable("trade_log", {
+	id: integer("id").primaryKey({ autoIncrement: true }),
+	orderId: integer("order_id").notNull(),
+	symbol: text("symbol").notNull(),
+	side: text("side").notNull(),
+	quantity: real("quantity").notNull(),
+	price: real("price").notNull(),
+	pnlRealized: real("pnl_realized").default(0),
 	createdAt: text("created_at").notNull(),
 });
 
