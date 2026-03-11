@@ -1,3 +1,23 @@
+export interface PositionSummary {
+	symbol: string;
+	direction: string;
+	quantity: number;
+	avgCost: number;
+	currentPrice: number;
+	unrealizedPnl: number;
+	pnlPct: number;
+}
+
+export interface ScoreSummary {
+	symbol: string;
+	score: number;
+	direction: string;
+	sizeMultiplier: number;
+	notionalFinal: number;
+	creditVeto: boolean;
+	corrPenalty: string | null;
+}
+
 export interface ReportContext {
 	date: string;
 	liquiditySignal?: { signal: string; metadata: Record<string, unknown> };
@@ -6,6 +26,18 @@ export interface ReportContext {
 	sentimentSignal?: { signal: string; metadata: Record<string, unknown> };
 	marketBias?: { signal: string; metadata: Record<string, unknown> };
 	usdModel?: { signal: string; metadata: Record<string, unknown> };
+	btcSignal?: { signal: string; metadata: Record<string, unknown> };
+	correlationMatrix?: { signal: string; metadata: Record<string, unknown> };
+
+	// §8-§11 additions
+	positions?: PositionSummary[];
+	scores?: ScoreSummary[];
+	riskLevel?: string;
+	riskMultiplier?: number;
+	portfolioDrawdownPct?: number;
+	atrInfo?: Record<string, { atrPct: number; stopPct: number }>;
+	kellyFraction?: number | null;
+	accountEquity?: number;
 }
 
 /**
@@ -28,6 +60,45 @@ export function buildDailyReportPrompt(ctx: ReportContext): string {
 		staleWarnings.length > 0
 			? `\n⚡ 注意：以下数据源可能不是最新的：${staleWarnings.join("、")}。对应信号仅供参考。\n`
 			: "";
+
+	// Build positions data section
+	const positionsSection =
+		ctx.positions && ctx.positions.length > 0
+			? ctx.positions
+					.map(
+						(p) =>
+							`  ${p.symbol}: ${p.direction} ${p.quantity}股 @ $${p.avgCost.toFixed(2)}, 现价 $${p.currentPrice.toFixed(2)}, PnL $${p.unrealizedPnl.toFixed(2)} (${(p.pnlPct * 100).toFixed(2)}%)`,
+					)
+					.join("\n")
+			: "暂无持仓";
+
+	const scoresSection =
+		ctx.scores && ctx.scores.length > 0
+			? ctx.scores
+					.map(
+						(s) =>
+							`  ${s.symbol}: score=${s.score.toFixed(1)} ${s.direction} ${(s.sizeMultiplier * 100).toFixed(0)}% $${s.notionalFinal}${s.creditVeto ? " [VETO]" : ""}${s.corrPenalty ? ` [${s.corrPenalty}]` : ""}`,
+					)
+					.join("\n")
+			: "暂无评分";
+
+	const atrSection =
+		ctx.atrInfo && Object.keys(ctx.atrInfo).length > 0
+			? Object.entries(ctx.atrInfo)
+					.map(([sym, info]) => `  ${sym}: ATR=${info.atrPct.toFixed(2)}% 止损距=${info.stopPct.toFixed(2)}%`)
+					.join("\n")
+			: "ATR 数据积累中（需 15 天小时线）";
+
+	const riskSection = [
+		`  风控等级: ${ctx.riskLevel ?? "normal"} (乘数: ${ctx.riskMultiplier ?? 1})`,
+		`  组合回撤: ${ctx.portfolioDrawdownPct !== undefined ? `${(ctx.portfolioDrawdownPct * 100).toFixed(2)}%` : "n/a"}`,
+		ctx.kellyFraction !== null && ctx.kellyFraction !== undefined
+			? `  1/4 Kelly 上限: ${(ctx.kellyFraction * 100).toFixed(1)}%`
+			: "  1/4 Kelly: 样本不足，暂未激活",
+		ctx.accountEquity ? `  账户权益: $${ctx.accountEquity.toFixed(2)}` : "",
+	]
+		.filter(Boolean)
+		.join("\n");
 
 	return `你是一位专业的宏观分析师，请根据以下数据生成一份中文投研日报。
 
@@ -52,6 +123,24 @@ ${ctx.marketBias ? JSON.stringify(ctx.marketBias, null, 2) : "暂无数据"}
 
 ### 美元定价模型（γ = r_f + π_risk − cy）
 ${ctx.usdModel ? JSON.stringify(ctx.usdModel, null, 2) : "暂无数据"}
+
+### BTC 信号
+${ctx.btcSignal ? JSON.stringify(ctx.btcSignal, null, 2) : "暂无数据"}
+
+### 相关性矩阵
+${ctx.correlationMatrix ? JSON.stringify(ctx.correlationMatrix, null, 2) : "暂无数据"}
+
+### 当前持仓
+${positionsSection}
+
+### 交易信号评分
+${scoresSection}
+
+### ATR 波动率
+${atrSection}
+
+### 风控状态
+${riskSection}
 
 ## 输出要求
 
@@ -99,9 +188,26 @@ ${ctx.usdModel ? JSON.stringify(ctx.usdModel, null, 2) : "暂无数据"}
    *   **主要货币对**：列出 DXY、EUR/USD、USD/JPY、USD/CNY 等关键汇率
    *   **关注要点**：基于上述分析给出1-2个关键关注点
 
-8. **🎯 综合操作建议** — 基于 overall_bias + confidence + 美元方向信号给出综合方向，confidence=low 时明确建议观望
+8. **📦 持仓回顾** — 必须包含以下小标题：
+   *   **当前持仓**：列出所有持仓标的、方向、数量、成本价、现价、未实现盈亏（金额+百分比）
+   *   **持仓变化**：相比上次日报，哪些标的新开仓/加仓/减仓/平仓
+   *   **风控状态**：当前风控等级（normal/caution/warning/halt）、组合回撤、风控乘数
+   *   若无持仓则简述"当前空仓"及原因
 
-9. **📋 数据附录** — 关键数值汇总表格（Markdown 表格格式，包含美元模型数据）
+9. **🔄 相关性与轮动** — 必须包含以下小标题：
+   *   **相关性矩阵**：列出 SPY-QQQ、SPY-IWM、QQQ-IWM、BTC-SPY 的 7d 和 30d 相关系数
+   *   **BTC 相关性机制**：当前 BTC-SPY 相关性处于什么状态（synchronized/independent/neutral），对交易的影响
+   *   **相关性惩罚**：是否有标的因高相关性被降低仓位
+
+10. **📊 交易信号详解** — 必须包含以下小标题：
+   *   **评分汇总**：每个标的的综合得分、方向、仓位比例、目标金额
+   *   **ATR 波动率**：各标的的 14 日 ATR 百分比、止损距离百分比（若 ATR 数据不足则说明）
+   *   **1/4 Kelly 上限**：当前是否激活、f* 值、对仓位的约束效果
+   *   **关键信号分解**：对得分最高和最低的标的展开子分项（流动性、收益率曲线、情绪、USD 模型各贡献多少分）
+
+11. **🎯 综合操作建议** — 基于 overall_bias + confidence + 美元方向信号 + 持仓状态给出综合方向，confidence=low 时明确建议观望
+
+12. **📋 数据附录** — 关键数值汇总表格（Markdown 表格格式，包含美元模型数据、各标的评分、ATR、风控状态）
 
 若存在 stale 数据，在对应章节开头标注"⚡ 以下信号基于非最新数据（数据源：xxx，最后更新：xxx）"。
 

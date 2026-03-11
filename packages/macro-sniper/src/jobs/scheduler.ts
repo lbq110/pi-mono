@@ -10,7 +10,7 @@ import {
 import { loadConfig } from "../config.js";
 import { getDb } from "../db/client.js";
 import { checkPendingPredictions } from "../executors/accuracy-tracker.js";
-import { checkStopLoss } from "../executors/risk-manager.js";
+import { checkBtcCrashLinkage, checkStopLoss } from "../executors/risk-manager.js";
 import { runTradeEngine } from "../executors/trade-engine.js";
 import { createChildLogger } from "../logger.js";
 import { notifyViaMom } from "../notifications/mom-events.js";
@@ -196,7 +196,7 @@ export function startScheduler(streamText: (prompt: string, model: string) => Pr
 		),
 	);
 
-	// Hourly risk check: L1 stop-loss at :00 (before trade engine at :05)
+	// Hourly risk check: L1 stop-loss + L4 BTC crash at :00 (before trade engine at :05)
 	scheduledTasks.push(
 		cron.schedule(
 			"0 * * * *",
@@ -210,6 +210,18 @@ export function startScheduler(streamText: (prompt: string, model: string) => Pr
 					})
 					.catch((err) =>
 						log.error({ error: err instanceof Error ? err.message : String(err) }, "L1 stop-loss check failed"),
+					);
+				checkBtcCrashLinkage(db)
+					.then((r) => {
+						if (r.triggered) {
+							log.warn(
+								{ btcReturn24h: r.btcReturn24h, reductions: r.reductions.length },
+								"L4 BTC crash linkage triggered",
+							);
+						}
+					})
+					.catch((err) =>
+						log.error({ error: err instanceof Error ? err.message : String(err) }, "L4 BTC crash check failed"),
 					);
 			},
 			{ timezone },

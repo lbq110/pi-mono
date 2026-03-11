@@ -3,7 +3,7 @@ import { ATR_MULTIPLIER, computeATR } from "../analyzers/atr.js";
 import { getAlpacaClient } from "../broker/alpaca.js";
 import { loadConfig } from "../config.js";
 import type { Db } from "../db/client.js";
-import { positions, riskEvents, riskState } from "../db/schema.js";
+import { hourlyPrices, positions, riskEvents, riskState } from "../db/schema.js";
 import { createChildLogger } from "../logger.js";
 import { postToSlack } from "../notifications/slack.js";
 
@@ -502,4 +502,160 @@ export function checkRecovery(db: Db, currentEquity: number): { recovered: boole
 	}
 
 	return { recovered: false, newLevel: currentLevel };
+}
+
+// ─── L4: BTC Crash Linkage ────────────────────────
+
+/** BTC 24h drawdown threshold to trigger equity reduction */
+const BTC_CRASH_THRESHOLD = -0.05; // -5%
+/** Equity position reduction multiplier when BTC crashes */
+const BTC_CRASH_EQUITY_REDUCTION = 0.8; // reduce by 20%
+/** Cooldown: don't trigger L4 again within N hours */
+const BTC_CRASH_COOLDOWN_HOURS = 12;
+
+/**
+ * Compute BTC's 24-hour return from hourly_prices.
+ * Returns null if insufficient data.
+ */
+function getBtc24hReturn(db: Db): number | null {
+	const rows = db
+		.select({ close: hourlyPrices.close, datetime: hourlyPrices.datetime })
+		.from(hourlyPrices)
+		.where(eq(hourlyPrices.symbol, "BTCUSD"))
+		.orderBy(desc(hourlyPrices.datetime))
+		.limit(25)
+		.all();
+
+	if (rows.length < 2) return null;
+
+	const latest = rows[0];
+	// Find the candle closest to 24h ago
+	const latestTs = new Date(latest.datetime).getTime();
+	const targetTs = latestTs - 24 * 60 * 60 * 1000;
+
+	let closest = rows[rows.length - 1];
+	let closestDiff = Math.abs(new Date(closest.datetime).getTime() - targetTs);
+	for (const r of rows) {
+		const diff = Math.abs(new Date(r.datetime).getTime() - targetTs);
+		if (diff < closestDiff) {
+			closest = r;
+			closestDiff = diff;
+		}
+	}
+
+	if (closest.close === 0) return null;
+	return (latest.close - closest.close) / closest.close;
+}
+
+export interface BtcCrashResult {
+	triggered: boolean;
+	btcReturn24h: number | null;
+	reductions: { symbol: string; oldQty: number; newQty: number; error?: string }[];
+}
+
+/**
+ * L4 BTC Crash Linkage: when BTC drops >5% in 24h,
+ * reduce all equity positions (SPY/QQQ/IWM) by 20%.
+ *
+ * Does NOT affect BTC position itself or UUP.
+ */
+export async function checkBtcCrashLinkage(db: Db): Promise<BtcCrashResult> {
+	const result: BtcCrashResult = { triggered: false, btcReturn24h: null, reductions: [] };
+
+	const btcReturn = getBtc24hReturn(db);
+	result.btcReturn24h = btcReturn;
+
+	if (btcReturn === null || btcReturn > BTC_CRASH_THRESHOLD) {
+		log.info(
+			{ btcReturn24h: btcReturn?.toFixed(4) ?? "n/a", threshold: BTC_CRASH_THRESHOLD },
+			"L4 BTC crash check: no trigger",
+		);
+		return result;
+	}
+
+	// Check cooldown — don't trigger within 12h of last L4 event
+	const now = new Date().toISOString();
+	const recentL4 = db
+		.select({ id: riskEvents.id })
+		.from(riskEvents)
+		.where(and(eq(riskEvents.eventType, "btc_crash_l4"), gte(riskEvents.cooldownUntil, now)))
+		.limit(1)
+		.all();
+
+	if (recentL4.length > 0) {
+		log.info("L4 BTC crash: still in cooldown, skipping");
+		return result;
+	}
+
+	log.warn({ btcReturn24h: btcReturn.toFixed(4) }, "L4 BTC crash triggered — reducing equity positions by 20%");
+	result.triggered = true;
+
+	const client = getAlpacaClient();
+	const equitySymbols = ["SPY", "QQQ", "IWM"];
+	const alpacaPositions = await client.getPositions();
+
+	for (const sym of equitySymbols) {
+		const pos = alpacaPositions.find((p) => p.symbol === sym);
+		if (!pos) continue;
+
+		const currentQty = Math.abs(Number.parseFloat(pos.qty));
+		const reduceQty = Math.floor(currentQty * (1 - BTC_CRASH_EQUITY_REDUCTION));
+		const targetQty = currentQty - reduceQty;
+
+		if (reduceQty <= 0) {
+			result.reductions.push({ symbol: sym, oldQty: currentQty, newQty: currentQty });
+			continue;
+		}
+
+		try {
+			await client.placeMarketOrder(sym, "sell", undefined, reduceQty);
+			log.info({ symbol: sym, oldQty: currentQty, reducedBy: reduceQty, newQty: targetQty }, "L4 equity reduced");
+			result.reductions.push({ symbol: sym, oldQty: currentQty, newQty: targetQty });
+		} catch (err) {
+			const msg = err instanceof Error ? err.message : String(err);
+			log.error({ symbol: sym, error: msg }, "L4 equity reduction failed");
+			result.reductions.push({ symbol: sym, oldQty: currentQty, newQty: currentQty, error: msg });
+		}
+	}
+
+	// Record event with cooldown
+	const cooldownUntil = new Date(Date.now() + BTC_CRASH_COOLDOWN_HOURS * 60 * 60 * 1000).toISOString();
+	db.insert(riskEvents)
+		.values({
+			eventType: "btc_crash_l4",
+			symbol: "BTCUSD",
+			triggerValue: btcReturn,
+			threshold: BTC_CRASH_THRESHOLD,
+			action: `reduced_equity_${(BTC_CRASH_EQUITY_REDUCTION * 100).toFixed(0)}pct`,
+			qtyAtClose: null,
+			priceAtClose: null,
+			pnlAtClose: null,
+			cooldownUntil,
+			createdAt: now,
+		})
+		.run();
+
+	// Slack alert
+	const config = loadConfig();
+	if (config.SLACK_BOT_TOKEN && config.SLACK_CHANNEL_ID) {
+		const reductionLines = result.reductions
+			.map((r) => `  ${r.symbol}: ${r.oldQty} → ${r.newQty}${r.error ? ` (failed: ${r.error})` : ""}`)
+			.join("\n");
+		const text = [
+			`⚠️ *[L4 BTC 急跌联动]* BTC 24h 跌幅 ${(btcReturn * 100).toFixed(2)}%`,
+			``,
+			`*触发阈值：* -5%`,
+			`*动作：* 权益仓位减仓 20%`,
+			reductionLines,
+			`*冷却：* ${BTC_CRASH_COOLDOWN_HOURS}h 内不再触发`,
+		].join("\n");
+
+		try {
+			await postToSlack(text, { botToken: config.SLACK_BOT_TOKEN, channelId: config.SLACK_CHANNEL_ID });
+		} catch (alertErr) {
+			log.warn({ error: alertErr instanceof Error ? alertErr.message : String(alertErr) }, "L4 Slack alert failed");
+		}
+	}
+
+	return result;
 }

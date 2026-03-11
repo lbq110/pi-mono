@@ -484,7 +484,9 @@ trade
 
 // ─── risk commands ────────────────────────────────
 
-const risk = program.command("risk").description("Risk management (L1 stop-loss)");
+import { checkBtcCrashLinkage } from "./executors/risk-manager.js";
+
+const risk = program.command("risk").description("Risk management (L1-L4)");
 
 risk
 	.command("check")
@@ -501,6 +503,26 @@ risk
 				console.log(
 					`  ${e.symbol.padEnd(8)} pnl=${pct}%  qty=${e.qty.toFixed(4)}  price=$${e.price.toFixed(2)}  closed=${e.closed}${e.error ? `  error=${e.error}` : ""}`,
 				);
+			}
+		}
+		closeDb();
+	});
+
+risk
+	.command("btc-crash")
+	.description("Manually check L4 BTC crash linkage (-5% 24h → reduce equity 20%)")
+	.action(async () => {
+		const db = initDb();
+		const result = await checkBtcCrashLinkage(db);
+		console.log(
+			`BTC 24h return: ${result.btcReturn24h !== null ? `${(result.btcReturn24h * 100).toFixed(2)}%` : "n/a"}`,
+		);
+		if (!result.triggered) {
+			console.log("No BTC crash linkage triggered.");
+		} else {
+			console.log(`\n── L4 BTC Crash Linkage ──`);
+			for (const r of result.reductions) {
+				console.log(`  ${r.symbol.padEnd(8)} ${r.oldQty} → ${r.newQty}${r.error ? `  error=${r.error}` : ""}`);
 			}
 		}
 		closeDb();

@@ -1,5 +1,6 @@
 export { checkPendingPredictions, createPredictionSnapshot, formatAccuracyReport } from "./accuracy-tracker.js";
 export {
+	checkBtcCrashLinkage,
 	checkRecovery,
 	checkStopLoss,
 	DRAWDOWN_CAUTION,

@@ -1,9 +1,11 @@
 import { eq } from "drizzle-orm";
 import type { Db } from "../db/client.js";
-import { analysisResults, generatedReports } from "../db/schema.js";
+import { analysisResults, generatedReports, positions } from "../db/schema.js";
+import { getPortfolioHWM, getRiskLevel, getRiskMultiplier } from "../executors/risk-manager.js";
+import { previewScores } from "../executors/trade-engine.js";
 import { createChildLogger } from "../logger.js";
 import { formatReport } from "./formatter.js";
-import type { ReportContext } from "./prompt-template.js";
+import type { PositionSummary, ReportContext, ScoreSummary } from "./prompt-template.js";
 import { buildDailyReportPrompt } from "./prompt-template.js";
 
 const log = createChildLogger("reporter");
@@ -38,6 +40,64 @@ export async function generateDailyReport(
 	// Read all signals from DB (not from analyzers directly — fully DB-decoupled)
 	const signals = loadAnalysisResults(db, date);
 
+	// Load current positions for §8
+	const posRows = db.select().from(positions).all();
+	const positionSummaries: PositionSummary[] = posRows
+		.filter((p) => p.direction !== "flat" && p.quantity > 0)
+		.map((p) => ({
+			symbol: p.symbol,
+			direction: p.direction,
+			quantity: p.quantity,
+			avgCost: p.avgCost,
+			currentPrice: p.currentPrice,
+			unrealizedPnl: p.unrealizedPnl,
+			pnlPct: p.avgCost > 0 ? p.unrealizedPnl / (p.avgCost * p.quantity) : 0,
+		}));
+
+	// Load scores for §10
+	let scoreSummaries: ScoreSummary[] = [];
+	let atrInfo: Record<string, { atrPct: number; stopPct: number }> = {};
+	let riskLevel = "normal";
+	let riskMultiplier = 1;
+	let kellyFraction: number | null = null;
+	let portfolioDrawdownPct = 0;
+
+	try {
+		const allScores = previewScores(db);
+		const scoreEntries: ScoreSummary[] = [];
+		for (const sym of ["SPY", "QQQ", "IWM", "BTCUSD", "UUP"] as const) {
+			const s = allScores[sym];
+			scoreEntries.push({
+				symbol: s.symbol,
+				score: s.finalScore,
+				direction: s.direction,
+				sizeMultiplier: s.sizeMultiplier,
+				notionalFinal: s.notionalFinal,
+				creditVeto: s.creditVeto,
+				corrPenalty: s.evidence.corrRegimeNote,
+			});
+		}
+		scoreSummaries = scoreEntries;
+		atrInfo = allScores.atrInfo;
+		riskLevel = allScores.riskLevel;
+		riskMultiplier = allScores.riskMultiplier;
+		kellyFraction = allScores.kellyFraction;
+	} catch {
+		log.warn("Failed to compute scores for report, continuing without");
+	}
+
+	// Risk state
+	riskLevel = getRiskLevel(db);
+	riskMultiplier = getRiskMultiplier(db);
+	const hwm = getPortfolioHWM(db);
+
+	// Estimate account equity from positions or default
+	const totalPnl = positionSummaries.reduce((s, p) => s + p.unrealizedPnl, 0);
+	const accountEquity = hwm > 0 ? hwm - hwm * portfolioDrawdownPct : 100000 + totalPnl;
+	if (hwm > 0 && accountEquity > 0) {
+		portfolioDrawdownPct = Math.max(0, (hwm - accountEquity) / hwm);
+	}
+
 	const ctx: ReportContext = {
 		date,
 		liquiditySignal: signals.get("liquidity_signal"),
@@ -46,6 +106,16 @@ export async function generateDailyReport(
 		sentimentSignal: signals.get("sentiment_signal"),
 		marketBias: signals.get("market_bias"),
 		usdModel: signals.get("usd_model"),
+		btcSignal: signals.get("btc_signal"),
+		correlationMatrix: signals.get("correlation_matrix"),
+		positions: positionSummaries,
+		scores: scoreSummaries,
+		riskLevel,
+		riskMultiplier,
+		portfolioDrawdownPct,
+		atrInfo,
+		kellyFraction,
+		accountEquity,
 	};
 
 	const prompt = buildDailyReportPrompt(ctx);

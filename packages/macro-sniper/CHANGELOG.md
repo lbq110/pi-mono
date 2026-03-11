@@ -34,10 +34,25 @@
 - Integration tests covering all 4 analyzers, full pipeline, mock LLM report generation, and upsert idempotency
 - Custom model support in LLM layer for models not yet in pi-ai registry (e.g., gemini-3.1-flash-lite-preview)
 
+- ATR calculation module (14-day ATR from hourly OHLC bars, K=2, 1% risk per trade)
+- Trailing stop (chandelier): HWM - 2×ATR for longs, breakeven guarantee, fallback to -8% when ATR unavailable
+- Drawdown tier system: normal (×1.0) → caution at 5% (×0.5) → warning at 10% (×0.25) → halt at 15% (×0)
+- Staged recovery: 3 consecutive wins to upgrade one tier, double retreat on 2 losses after upgrade
+- Correlation penalty: equity pairs with 30d corr > 0.85 get ×0.7 position reduction
+- Quarter-Kelly cap: f*/4 from prediction accuracy history (requires 20+ samples)
+- ATR-based position sizing: volatility-adjusted notional capped at $10K per instrument
+- L4 BTC crash linkage: BTC -5% in 24h → reduce equity positions by 20%, 12h cooldown
+- DB schema: `positions.high_water_mark`, `risk_state` table for portfolio-level state
+- Daily report §8 (持仓回顾): current positions, PnL, risk state
+- Daily report §9 (相关性与轮动): correlation matrix display, BTC regime, penalty status
+- Daily report §10 (交易信号详解): score breakdown, ATR, Kelly, signal decomposition
+- Report prompt now includes BTC signal, correlation matrix, positions, scores, ATR, and risk state data
+
 ### Changed
 
 - Default LLM_MODEL_FAST changed to `gemini-3.1-flash-lite-preview` (faster, cheaper than gemini-2.5-flash)
 - Replaced CoinGecko and Coinglass with Binance public API for BTC price and open interest data (zero API keys needed)
+- Daily report expanded from 9 to 12 sections (added §8-§10, renumbered §8→§11, §9→§12)
 
 ### Removed
 
