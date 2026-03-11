@@ -26,6 +26,9 @@ import {
 import {
 	checkStopLoss,
 	getLastStopLossEvent,
+	getPortfolioHWM,
+	getRiskLevel,
+	getRiskMultiplier,
 	isInStopLossCooldown,
 	STOP_LOSS_THRESHOLD,
 } from "./executors/risk-manager.js";
@@ -411,12 +414,31 @@ trade
 	.action(() => {
 		const db = initDb();
 		const scores = previewScores(db);
-		const { SPY, QQQ, IWM, BTCUSD, UUP, inflationRegime, marketBias, marketBiasConfidence } = scores;
+		const {
+			SPY,
+			QQQ,
+			IWM,
+			BTCUSD,
+			UUP,
+			inflationRegime,
+			marketBias,
+			marketBiasConfidence,
+			riskLevel,
+			riskMultiplier,
+			atrInfo,
+			kellyFraction,
+		} = scores;
 		console.log(`\n── Market Context ──`);
 		console.log(`  Bias:      ${marketBias} (${marketBiasConfidence})`);
 		console.log(
 			`  Inflation: ${inflationRegime.regime} | BEI10y=${inflationRegime.bei10y.toFixed(2)}% | GLD5d=${inflationRegime.gld5dMomentum.toFixed(2)}% | GLD20d=${inflationRegime.gld20dTrend.toFixed(2)}%`,
 		);
+		console.log(`  Risk:      ${riskLevel} (×${riskMultiplier})`);
+		if (kellyFraction !== null) console.log(`  Kelly:     1/4 f* = ${(kellyFraction * 100).toFixed(1)}%`);
+		console.log(`\n── ATR (14d) ──`);
+		for (const [sym, info] of Object.entries(atrInfo)) {
+			console.log(`  ${sym.padEnd(8)} ATR=${info.atrPct.toFixed(2)}%  stop=${info.stopPct.toFixed(2)}%`);
+		}
 		console.log(`\n── Instrument Scores ──`);
 		for (const s of [SPY, QQQ, IWM, BTCUSD, UUP]) {
 			const veto = s.creditVeto ? " [CREDIT_VETO]" : s.btcSyncVeto ? " [BTC_SYNC_VETO]" : "";
@@ -507,6 +529,14 @@ risk
 				console.log(`  ${sym.padEnd(8)} no stop-loss events`);
 			}
 		}
+
+		// Drawdown tier info
+		const riskLevel = getRiskLevel(db);
+		const riskMult = getRiskMultiplier(db);
+		const hwm = getPortfolioHWM(db);
+		console.log(`\n── Drawdown Tier ──`);
+		console.log(`  Level:      ${riskLevel} (multiplier: ${riskMult})`);
+		console.log(`  Portfolio HWM: $${hwm.toFixed(2)}`);
 		closeDb();
 	});
 

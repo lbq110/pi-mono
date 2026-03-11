@@ -1,8 +1,10 @@
 import { and, asc, desc, eq, gte } from "drizzle-orm";
+import { type ATRResult, atrPositionSize, computeAllATRs } from "../analyzers/atr.js";
 import type { Db } from "../db/client.js";
-import { analysisResults, fxSnapshots, sentimentSnapshots } from "../db/schema.js";
+import { analysisResults, fxSnapshots, predictionResults, sentimentSnapshots } from "../db/schema.js";
 import { createChildLogger } from "../logger.js";
 import type { CorrelationMatrixMetadata } from "../types.js";
+import { getRiskMultiplier } from "./risk-manager.js";
 import type { InflationRegime, InstrumentScore, SubScore, TradedSymbol } from "./types.js";
 
 const log = createChildLogger("executor");
@@ -22,6 +24,20 @@ export const POSITION_TARGETS: Record<TradedSymbol, number> = {
 const FULL_LONG_THRESHOLD = 50; // score ≥ 50 → full position
 const HALF_LONG_THRESHOLD = 20; // score ≥ 20 → half position
 const CONFLICTED_MAX_MULTIPLIER = 0.75;
+
+// ─── Correlation penalty ──────────────────────────
+
+/** If two equity instruments have 7d correlation > this, penalize both */
+const CORR_PENALTY_THRESHOLD = 0.85;
+/** Multiplier applied to both when high correlation detected */
+const CORR_PENALTY_MULTIPLIER = 0.7;
+
+// ─── Quarter-Kelly cap ────────────────────────────
+
+/** Minimum sample size before applying Kelly cap */
+const KELLY_MIN_SAMPLES = 20;
+/** Kelly fraction: use 1/4 Kelly as conservative cap */
+const KELLY_FRACTION = 0.25;
 
 // ─── DB readers ───────────────────────────────────
 
@@ -548,6 +564,108 @@ function scoreUup(_db: Db, analysis: Map<string, AnalysisRow>, inflation: Inflat
 	};
 }
 
+// ─── Correlation penalty ──────────────────────────
+
+function applyCorrelationPenalty(
+	scores: Record<TradedSymbol, InstrumentScore>,
+	analysis: Map<string, AnalysisRow>,
+): void {
+	const corrRow = analysis.get("correlation_matrix");
+	if (!corrRow) return;
+
+	const meta = corrRow.metadata as CorrelationMatrixMetadata | undefined;
+	if (!meta?.window_30d_daily) return;
+
+	// window_30d_daily is a flat map: "SPY_QQQ" → 0.85
+	const getCorr = (a: string, b: string): number | undefined => {
+		return meta.window_30d_daily[`${a}_${b}`] ?? meta.window_30d_daily[`${b}_${a}`];
+	};
+
+	// Check equity pair correlations
+	const pairs: [TradedSymbol, TradedSymbol][] = [
+		["SPY", "QQQ"],
+		["SPY", "IWM"],
+		["QQQ", "IWM"],
+	];
+
+	for (const [symA, symB] of pairs) {
+		const corr = getCorr(symA, symB);
+		if (corr !== undefined && corr > CORR_PENALTY_THRESHOLD) {
+			const sA = scores[symA];
+			const sB = scores[symB];
+			if (sA && sB) {
+				sA.sizeMultiplier = sA.sizeMultiplier * CORR_PENALTY_MULTIPLIER;
+				sB.sizeMultiplier = sB.sizeMultiplier * CORR_PENALTY_MULTIPLIER;
+				const note = `corr(${symA}-${symB})=${corr.toFixed(2)}>0.85→×0.7`;
+				sA.evidence.corrRegimeNote = `${sA.evidence.corrRegimeNote ?? ""} ${note}`.trim();
+				sB.evidence.corrRegimeNote = `${sB.evidence.corrRegimeNote ?? ""} ${note}`.trim();
+			}
+		}
+	}
+}
+
+// ─── Quarter-Kelly cap ────────────────────────────
+
+/**
+ * Compute quarter-Kelly optimal fraction from prediction accuracy history.
+ * f* = (bp - q) / b, then apply KELLY_FRACTION (1/4)
+ *
+ * Returns null if insufficient samples.
+ */
+function computeQuarterKelly(db: Db): number | null {
+	const results = db
+		.select({
+			biasCorrect: predictionResults.biasCorrect,
+			spyReturn: predictionResults.spyReturn,
+		})
+		.from(predictionResults)
+		.orderBy(desc(predictionResults.checkDate))
+		.limit(50)
+		.all();
+
+	const valid = results.filter((r) => r.biasCorrect !== null && r.spyReturn !== null);
+	if (valid.length < KELLY_MIN_SAMPLES) return null;
+
+	const wins = valid.filter((r) => r.biasCorrect === 1);
+	const losses = valid.filter((r) => r.biasCorrect === 0);
+	const p = wins.length / valid.length; // win rate
+	const q = 1 - p;
+
+	if (losses.length === 0 || wins.length === 0) return null;
+
+	const avgWin = wins.reduce((s, r) => s + Math.abs(r.spyReturn ?? 0), 0) / wins.length;
+	const avgLoss = losses.reduce((s, r) => s + Math.abs(r.spyReturn ?? 0), 0) / losses.length;
+	const b = avgLoss > 0 ? avgWin / avgLoss : 1; // odds ratio
+
+	const kelly = (b * p - q) / b;
+	if (kelly <= 0) return 0; // negative Kelly → don't trade
+
+	const quarterKelly = kelly * KELLY_FRACTION;
+	log.info(
+		{
+			p: p.toFixed(3),
+			b: b.toFixed(2),
+			kelly: kelly.toFixed(3),
+			quarterKelly: quarterKelly.toFixed(3),
+			samples: valid.length,
+		},
+		"Quarter-Kelly computed",
+	);
+	return quarterKelly;
+}
+
+// ─── ATR-based notional adjustment ────────────────
+
+function adjustNotionalForATR(score: InstrumentScore, atrMap: Map<string, ATRResult>, accountEquity: number): void {
+	const atr = atrMap.get(score.symbol);
+	if (!atr) return; // no ATR data → keep original notional
+
+	const { notional } = atrPositionSize(accountEquity, atr, score.notionalTarget);
+	// ATR-based notional replaces fixed target, then multiply by sizeMultiplier
+	score.notionalTarget = Math.round(notional);
+	score.notionalFinal = Math.round(notional * score.sizeMultiplier);
+}
+
 // ─── Public entry point ───────────────────────────
 
 export interface AllScores {
@@ -559,9 +677,13 @@ export interface AllScores {
 	inflationRegime: InflationRegime;
 	marketBias: string;
 	marketBiasConfidence: string;
+	riskLevel: string;
+	riskMultiplier: number;
+	atrInfo: Record<string, { atrPct: number; stopPct: number }>;
+	kellyFraction: number | null;
 }
 
-export function scoreAllInstruments(db: Db): AllScores {
+export function scoreAllInstruments(db: Db, accountEquity?: number): AllScores {
 	const analysis = getAllLatestAnalysis(db);
 	const inflation = computeInflationRegime(db);
 	const biasRow = analysis.get("market_bias");
@@ -569,23 +691,108 @@ export function scoreAllInstruments(db: Db): AllScores {
 	const biasMeta = biasRow?.metadata as { confidence?: string } | undefined;
 	const marketBiasConfidence = biasMeta?.confidence ?? "low";
 
+	// Base scores (before adjustments)
 	const spy = scoreEquity(db, "SPY", analysis, inflation);
 	const qqq = scoreEquity(db, "QQQ", analysis, inflation);
 	const iwm = scoreEquity(db, "IWM", analysis, inflation);
 	const btc = scoreBtc(db, analysis);
 	const uup = scoreUup(db, analysis, inflation);
 
+	const scores: Record<TradedSymbol, InstrumentScore> = { SPY: spy, QQQ: qqq, IWM: iwm, BTCUSD: btc, UUP: uup };
+
+	// ─── Layer 1: Correlation penalty ─────────────
+	applyCorrelationPenalty(scores, analysis);
+
+	// ─── Layer 2: ATR-based position sizing ───────
+	const equity = accountEquity ?? 100000;
+	const atrMap = computeAllATRs(db);
+
+	for (const score of Object.values(scores)) {
+		adjustNotionalForATR(score, atrMap, equity);
+	}
+
+	// ─── Layer 3: Drawdown risk multiplier ────────
+	const riskMultiplier = getRiskMultiplier(db);
+	if (riskMultiplier < 1.0) {
+		for (const score of Object.values(scores)) {
+			score.sizeMultiplier *= riskMultiplier;
+			score.notionalFinal = Math.round(score.notionalTarget * score.sizeMultiplier);
+			if (riskMultiplier === 0) {
+				score.direction = "flat";
+			}
+		}
+	}
+
+	// ─── Layer 4: Quarter-Kelly cap ───────────────
+	const kellyFraction = computeQuarterKelly(db);
+	if (kellyFraction !== null) {
+		for (const score of Object.values(scores)) {
+			if (score.sizeMultiplier > kellyFraction) {
+				score.sizeMultiplier = kellyFraction;
+				score.notionalFinal = Math.round(score.notionalTarget * score.sizeMultiplier);
+			}
+		}
+	}
+
+	// Recalculate notionalFinal after all adjustments
+	for (const score of Object.values(scores)) {
+		score.notionalFinal = Math.round(score.notionalTarget * score.sizeMultiplier);
+	}
+
+	// Build ATR info for display
+	const atrInfo: Record<string, { atrPct: number; stopPct: number }> = {};
+	for (const [sym, atr] of atrMap) {
+		atrInfo[sym] = { atrPct: atr.atrPct, stopPct: atr.stopDistancePct };
+	}
+
+	const riskLevel =
+		getRiskMultiplier(db) === 1.0
+			? "normal"
+			: getRiskMultiplier(db) === 0
+				? "halt"
+				: getRiskMultiplier(db) === 0.5
+					? "caution"
+					: "warning";
+
 	log.info(
 		{
 			inflation: inflation.regime,
 			marketBias,
-			SPY: { score: spy.finalScore.toFixed(1), dir: spy.direction, mult: spy.sizeMultiplier },
-			QQQ: { score: qqq.finalScore.toFixed(1), dir: qqq.direction, mult: qqq.sizeMultiplier },
-			IWM: { score: iwm.finalScore.toFixed(1), dir: iwm.direction, mult: iwm.sizeMultiplier },
-			BTC: { score: btc.finalScore.toFixed(1), dir: btc.direction, mult: btc.sizeMultiplier },
-			UUP: { score: uup.finalScore.toFixed(1), dir: uup.direction, mult: uup.sizeMultiplier },
+			riskLevel,
+			riskMultiplier,
+			kellyFraction: kellyFraction?.toFixed(3) ?? "n/a",
+			SPY: {
+				score: spy.finalScore.toFixed(1),
+				dir: spy.direction,
+				mult: spy.sizeMultiplier.toFixed(2),
+				notional: spy.notionalFinal,
+			},
+			QQQ: {
+				score: qqq.finalScore.toFixed(1),
+				dir: qqq.direction,
+				mult: qqq.sizeMultiplier.toFixed(2),
+				notional: qqq.notionalFinal,
+			},
+			IWM: {
+				score: iwm.finalScore.toFixed(1),
+				dir: iwm.direction,
+				mult: iwm.sizeMultiplier.toFixed(2),
+				notional: iwm.notionalFinal,
+			},
+			BTC: {
+				score: btc.finalScore.toFixed(1),
+				dir: btc.direction,
+				mult: btc.sizeMultiplier.toFixed(2),
+				notional: btc.notionalFinal,
+			},
+			UUP: {
+				score: uup.finalScore.toFixed(1),
+				dir: uup.direction,
+				mult: uup.sizeMultiplier.toFixed(2),
+				notional: uup.notionalFinal,
+			},
 		},
-		"Instrument scores computed",
+		"Instrument scores computed (ATR + correlation + drawdown + Kelly)",
 	);
 
 	return {
@@ -597,5 +804,9 @@ export function scoreAllInstruments(db: Db): AllScores {
 		inflationRegime: inflation,
 		marketBias,
 		marketBiasConfidence,
+		riskLevel,
+		riskMultiplier,
+		atrInfo,
+		kellyFraction,
 	};
 }

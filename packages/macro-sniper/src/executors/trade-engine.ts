@@ -2,7 +2,7 @@ import { getAlpacaClient } from "../broker/alpaca.js";
 import type { Db } from "../db/client.js";
 import { orders, positions, tradeLog } from "../db/schema.js";
 import { createChildLogger } from "../logger.js";
-import { isInStopLossCooldown } from "./risk-manager.js";
+import { isInStopLossCooldown, updateDrawdownTier, updateHighWaterMarks } from "./risk-manager.js";
 import { scoreAllInstruments } from "./signal-scorer.js";
 import type { InstrumentScore, OrderOutcome, TradeDecision, TradedSymbol, TradeExecutionResult } from "./types.js";
 
@@ -516,8 +516,17 @@ export async function runTradeEngine(db: Db): Promise<TradeExecutionResult> {
 	const marketOpen = await client.isTradingOpen();
 	log.info({ marketOpen }, "Market status checked");
 
-	// Score all instruments
-	const allScores = scoreAllInstruments(db);
+	// Get account equity for ATR position sizing
+	let equity = 100000;
+	try {
+		const account = await client.getAccount();
+		equity = Number.parseFloat(account.equity);
+	} catch {
+		log.warn("Failed to fetch account equity, using default $100,000");
+	}
+
+	// Score all instruments (with ATR, correlation, drawdown, Kelly adjustments)
+	const allScores = scoreAllInstruments(db, equity);
 	const { SPY, QQQ, IWM, BTCUSD, UUP } = allScores;
 
 	// Get current positions
@@ -541,9 +550,24 @@ export async function runTradeEngine(db: Db): Promise<TradeExecutionResult> {
 	// Sync positions table
 	await syncPositionsToDb(db);
 
+	// Update trailing stop high water marks
+	updateHighWaterMarks(db);
+
+	// Update drawdown tier based on current equity
+	try {
+		const account = await client.getAccount();
+		const equity = Number.parseFloat(account.equity);
+		const { riskLevel, drawdownPct, changed } = updateDrawdownTier(db, equity);
+		if (changed) {
+			log.warn({ riskLevel, drawdownPct: (drawdownPct * 100).toFixed(2) }, "Portfolio drawdown tier changed");
+		}
+	} catch (err) {
+		log.error({ error: err instanceof Error ? err.message : String(err) }, "Failed to update drawdown tier");
+	}
+
 	const submitted = orderOutcomes.filter((o) => o.status === "submitted").length;
 	const failed = orderOutcomes.filter((o) => o.status === "failed").length;
-	const summary = `${submitted} orders submitted, ${failed} failed, ${skippedSymbols.length} skipped. Bias=${allScores.marketBias}(${allScores.marketBiasConfidence}), Inflation=${allScores.inflationRegime.regime}`;
+	const summary = `${submitted} orders submitted, ${failed} failed, ${skippedSymbols.length} skipped. Bias=${allScores.marketBias}(${allScores.marketBiasConfidence}), Inflation=${allScores.inflationRegime.regime}, Risk=${allScores.riskLevel}`;
 
 	log.info({ submitted, failed, skipped: skippedSymbols.length, summary }, "Trade engine complete");
 

@@ -88,12 +88,13 @@ export const positions = sqliteTable(
 	"positions",
 	{
 		id: integer("id").primaryKey({ autoIncrement: true }),
-		symbol: text("symbol").notNull(), // SPY, QQQ, IWM, BTCUSD
+		symbol: text("symbol").notNull(), // SPY, QQQ, IWM, BTCUSD, UUP
 		direction: text("direction").notNull(), // "long" | "short" | "flat"
 		quantity: real("quantity").notNull().default(0),
 		avgCost: real("avg_cost").notNull().default(0),
 		currentPrice: real("current_price").notNull().default(0),
 		unrealizedPnl: real("unrealized_pnl").notNull().default(0),
+		highWaterMark: real("high_water_mark"), // highest price since position opened (for trailing stop)
 		openedAt: text("opened_at"),
 		updatedAt: text("updated_at").notNull(),
 	},
@@ -139,6 +140,14 @@ export const riskEvents = sqliteTable("risk_events", {
 	pnlAtClose: real("pnl_at_close"), // unrealized_pl at trigger
 	cooldownUntil: text("cooldown_until"), // ISO timestamp, no re-entry before this
 	createdAt: text("created_at").notNull(),
+});
+
+// ─── Portfolio Risk State ────────────────────────
+
+export const riskState = sqliteTable("risk_state", {
+	key: text("key").primaryKey(), // "portfolio_hwm", "risk_level", etc.
+	value: text("value").notNull(),
+	updatedAt: text("updated_at").notNull(),
 });
 
 // ─── Prediction Accuracy Tracking ────────────────

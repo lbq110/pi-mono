@@ -14,6 +14,7 @@ import {
 	predictionResults,
 	predictionSnapshots,
 	riskEvents,
+	riskState,
 	sentimentSnapshots,
 	tradeLog,
 	yieldSnapshots,
@@ -263,6 +264,25 @@ export function runMigrationsOnDb(db: Db): void {
 
 	db.run(sql`CREATE INDEX IF NOT EXISTS idx_risk_events_symbol ON risk_events(symbol, created_at)`);
 	db.run(sql`CREATE INDEX IF NOT EXISTS idx_risk_events_cooldown ON risk_events(symbol, cooldown_until)`);
+
+	// ─── risk_state (portfolio-level risk tracking) ──
+
+	db.run(sql`
+		CREATE TABLE IF NOT EXISTS ${riskState} (
+			key TEXT PRIMARY KEY,
+			value TEXT NOT NULL,
+			updated_at TEXT NOT NULL
+		)
+	`);
+
+	// ─── positions.high_water_mark (trailing stop) ───
+
+	// ALTER TABLE IF NOT EXISTS pattern: try to add column, ignore if exists
+	try {
+		db.run(sql`ALTER TABLE positions ADD COLUMN high_water_mark REAL`);
+	} catch {
+		// Column already exists — safe to ignore
+	}
 }
 
 /**
