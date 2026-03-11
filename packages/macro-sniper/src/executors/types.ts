@@ -19,15 +19,15 @@ export interface SubScore {
 
 // ─── Per-Instrument Score ─────────────────────────
 
-export type TradedSymbol = "SPY" | "QQQ" | "IWM" | "BTCUSD";
+export type TradedSymbol = "SPY" | "QQQ" | "IWM" | "BTCUSD" | "UUP";
 
 export interface InstrumentScore {
 	symbol: TradedSymbol;
 	baseScore: number; // weighted sum × 100, before modifiers
-	finalScore: number; // after BTC equity modifier
-	direction: "long" | "flat";
+	finalScore: number; // after BTC equity modifier (or USD direct mapping)
+	direction: "long" | "short" | "flat"; // "short" only for UUP
 	sizeMultiplier: number; // 0 | 0.5 | 0.75 | 1.0
-	notionalTarget: number; // from config (SPY=$1000, etc.)
+	notionalTarget: number; // from config ($10,000 for all)
 	notionalFinal: number; // notionalTarget × sizeMultiplier
 	creditVeto: boolean; // credit_risk = risk_off_confirmed
 	btcSyncVeto: boolean; // BTC: synchronized + risk_off
@@ -48,12 +48,20 @@ export interface InstrumentScore {
 
 // ─── Trade Decision ───────────────────────────────
 
-export type TradeAction = "buy" | "sell" | "hold" | "resize_up" | "resize_down";
+export type TradeAction =
+	| "buy" // open long
+	| "sell" // close long
+	| "hold" // no change
+	| "resize_up" // increase long
+	| "resize_down" // reduce long (close + rebuy)
+	| "short" // open short (UUP only)
+	| "cover" // close short
+	| "resize_short"; // adjust short size (close + re-short)
 
 export interface TradeDecision {
 	symbol: string;
-	currentDirection: "long" | "flat";
-	targetDirection: "long" | "flat";
+	currentDirection: "long" | "short" | "flat";
+	targetDirection: "long" | "short" | "flat";
 	currentQty: number;
 	currentMarketValue: number;
 	targetNotional: number;

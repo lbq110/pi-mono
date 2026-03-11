@@ -411,14 +411,14 @@ trade
 	.action(() => {
 		const db = initDb();
 		const scores = previewScores(db);
-		const { SPY, QQQ, IWM, BTCUSD, inflationRegime, marketBias, marketBiasConfidence } = scores;
+		const { SPY, QQQ, IWM, BTCUSD, UUP, inflationRegime, marketBias, marketBiasConfidence } = scores;
 		console.log(`\n── Market Context ──`);
 		console.log(`  Bias:      ${marketBias} (${marketBiasConfidence})`);
 		console.log(
 			`  Inflation: ${inflationRegime.regime} | BEI10y=${inflationRegime.bei10y.toFixed(2)}% | GLD5d=${inflationRegime.gld5dMomentum.toFixed(2)}% | GLD20d=${inflationRegime.gld20dTrend.toFixed(2)}%`,
 		);
 		console.log(`\n── Instrument Scores ──`);
-		for (const s of [SPY, QQQ, IWM, BTCUSD]) {
+		for (const s of [SPY, QQQ, IWM, BTCUSD, UUP]) {
 			const veto = s.creditVeto ? " [CREDIT_VETO]" : s.btcSyncVeto ? " [BTC_SYNC_VETO]" : "";
 			console.log(
 				`  ${s.symbol.padEnd(8)} score=${s.finalScore.toFixed(1).padStart(7)}  ${s.direction.padEnd(5)}  ${(s.sizeMultiplier * 100).toFixed(0).padStart(3)}%  $${s.notionalFinal.toFixed(0).padStart(6)}${veto}`,
@@ -489,7 +489,7 @@ risk
 	.description("Show risk event history and current cooldown status")
 	.action(() => {
 		const db = initDb();
-		const symbols = ["SPY", "QQQ", "IWM", "BTCUSD"];
+		const symbols = ["SPY", "QQQ", "IWM", "BTCUSD", "UUP"];
 		console.log(`\n── Risk Status (L1 threshold: ${(STOP_LOSS_THRESHOLD * 100).toFixed(0)}%) ──`);
 		for (const sym of symbols) {
 			const inCooldown = isInStopLossCooldown(db, sym);

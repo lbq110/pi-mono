@@ -70,6 +70,8 @@ export function createPredictionSnapshot(db: Db, reportDate: string): void {
 	const btcPrice = getBinancePrice();
 	// DXY from fx_snapshots via sentiment (stored as "DXY" in sentiment)
 	const dxyPrice = getPrice("DXY");
+	// UUP price for USD direction accuracy tracking
+	const uupPrice = getPrice("UUP");
 
 	// Full signals snapshot for future reference
 	const signalsSnapshot = {
@@ -81,6 +83,7 @@ export function createPredictionSnapshot(db: Db, reportDate: string): void {
 		marketBias: { signal: predictedBias, meta: getMetadata("market_bias") },
 		btcSignal: { signal: predictedBtc, meta: getMetadata("btc_signal") },
 		correlation: { signal: getSignal("correlation_matrix"), meta: getMetadata("correlation_matrix") },
+		uupPrice,
 	};
 
 	db.insert(predictionSnapshots)

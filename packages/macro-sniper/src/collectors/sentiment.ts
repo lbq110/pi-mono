@@ -100,17 +100,25 @@ export async function collectSentiment(
 		log.error({ error: message }, "Failed to collect BTC OI");
 	}
 
-	// SPY / QQQ / GLD from Yahoo Finance (equity proxy)
-	for (const symbol of ["SPY", "QQQ", "GLD"]) {
+	// SPY / QQQ / IWM / GLD / UUP / DXY from Yahoo Finance (equity proxies + FX)
+	const yahooTickers: Record<string, string> = {
+		SPY: "SPY",
+		QQQ: "QQQ",
+		IWM: "IWM",
+		GLD: "GLD",
+		UUP: "UUP",
+		DXY: "DX-Y.NYB",
+	};
+	for (const [metricName, ticker] of Object.entries(yahooTickers)) {
 		try {
-			const quote = await fetchYahooQuote(symbol);
+			const quote = await fetchYahooQuote(ticker);
 			if (quote) {
-				upsertSentiment(db, "yahoo", symbol, quote.price, quote.date);
-				log.info({ symbol, price: quote.price }, `${symbol} collected`);
+				upsertSentiment(db, "yahoo", metricName, quote.price, quote.date);
+				log.info({ symbol: metricName, price: quote.price }, `${metricName} collected`);
 			}
 		} catch (error) {
 			const message = error instanceof Error ? error.message : String(error);
-			log.error({ symbol, error: message }, `Failed to collect ${symbol}`);
+			log.error({ symbol: metricName, error: message }, `Failed to collect ${metricName}`);
 		}
 	}
 

@@ -16,6 +16,7 @@ const HOURLY_SYMBOLS: Record<string, string> = {
 	QQQ: "QQQ",
 	IWM: "IWM",
 	DXY: "DX-Y.NYB",
+	UUP: "UUP",
 };
 
 function upsertHourlyCandle(

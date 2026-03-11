@@ -89,7 +89,7 @@ export const positions = sqliteTable(
 	{
 		id: integer("id").primaryKey({ autoIncrement: true }),
 		symbol: text("symbol").notNull(), // SPY, QQQ, IWM, BTCUSD
-		direction: text("direction").notNull(), // "long" | "flat"
+		direction: text("direction").notNull(), // "long" | "short" | "flat"
 		quantity: real("quantity").notNull().default(0),
 		avgCost: real("avg_cost").notNull().default(0),
 		currentPrice: real("current_price").notNull().default(0),

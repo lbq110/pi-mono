@@ -14,12 +14,13 @@ const ALPACA_SYMBOLS: Record<TradedSymbol, string> = {
 	QQQ: "QQQ",
 	IWM: "IWM",
 	BTCUSD: "BTCUSD",
+	UUP: "UUP",
 };
 
 // ─── Position sync ────────────────────────────────
 
 interface CurrentPosition {
-	direction: "long" | "flat";
+	direction: "long" | "short" | "flat";
 	qty: number;
 	marketValue: number;
 }
@@ -30,17 +31,18 @@ async function getCurrentPositions(): Promise<Map<TradedSymbol, CurrentPosition>
 
 	const map = new Map<TradedSymbol, CurrentPosition>();
 	// Initialize all as flat
-	for (const sym of ["SPY", "QQQ", "IWM", "BTCUSD"] as TradedSymbol[]) {
+	for (const sym of ["SPY", "QQQ", "IWM", "BTCUSD", "UUP"] as TradedSymbol[]) {
 		map.set(sym, { direction: "flat", qty: 0, marketValue: 0 });
 	}
 
 	for (const p of alpacaPositions) {
 		const sym = Object.entries(ALPACA_SYMBOLS).find(([, v]) => v === p.symbol)?.[0] as TradedSymbol | undefined;
 		if (sym) {
+			const direction: "long" | "short" = p.side === "short" ? "short" : "long";
 			map.set(sym, {
-				direction: "long",
-				qty: Number.parseFloat(p.qty),
-				marketValue: Number.parseFloat(p.market_value),
+				direction,
+				qty: Math.abs(Number.parseFloat(p.qty)),
+				marketValue: Math.abs(Number.parseFloat(p.market_value)),
 			});
 		}
 	}
@@ -64,27 +66,58 @@ function makeDecisions(
 		let action: TradeDecision["action"];
 		let reason: string;
 
-		if (current.direction === "flat" && target === "long") {
-			action = "buy";
-			reason = `score=${score.finalScore.toFixed(1)}, entering long at $${targetNotional}`;
-		} else if (current.direction === "long" && target === "flat") {
-			action = "sell";
-			const veto = score.creditVeto ? "credit_veto" : score.btcSyncVeto ? "btc_sync_veto" : "score_below_threshold";
-			reason = `${veto}, closing position`;
-		} else if (current.direction === "long" && target === "long") {
-			// Check if size needs adjustment (>20% difference)
-			const sizeDiff = Math.abs(targetNotional - current.marketValue) / current.marketValue;
-			if (sizeDiff > 0.2) {
-				action = targetNotional > current.marketValue ? "resize_up" : "resize_down";
-				reason = `score=${score.finalScore.toFixed(1)}, resize ${current.marketValue.toFixed(0)} → ${targetNotional.toFixed(0)}`;
+		const veto = score.creditVeto ? "credit_veto" : score.btcSyncVeto ? "btc_sync_veto" : "score_below_threshold";
+
+		if (current.direction === "flat") {
+			if (target === "long") {
+				action = "buy";
+				reason = `score=${score.finalScore.toFixed(1)}, entering long at $${targetNotional}`;
+			} else if (target === "short") {
+				action = "short";
+				reason = `score=${score.finalScore.toFixed(1)}, entering short at $${targetNotional}`;
 			} else {
 				action = "hold";
-				reason = `score=${score.finalScore.toFixed(1)}, position size within 20% tolerance`;
+				reason = `score=${score.finalScore.toFixed(1)}, remaining flat`;
+			}
+		} else if (current.direction === "long") {
+			if (target === "flat") {
+				action = "sell";
+				reason = `${veto}, closing long position`;
+			} else if (target === "short") {
+				// Flip: close long first; short opens next cycle
+				action = "sell";
+				reason = `score=${score.finalScore.toFixed(1)}, USD flipped bearish — closing long (will short next cycle)`;
+			} else {
+				// target === "long": resize check
+				const sizeDiff = Math.abs(targetNotional - current.marketValue) / current.marketValue;
+				if (sizeDiff > 0.2) {
+					action = targetNotional > current.marketValue ? "resize_up" : "resize_down";
+					reason = `score=${score.finalScore.toFixed(1)}, resize ${current.marketValue.toFixed(0)} → ${targetNotional.toFixed(0)}`;
+				} else {
+					action = "hold";
+					reason = `score=${score.finalScore.toFixed(1)}, position size within 20% tolerance`;
+				}
 			}
 		} else {
-			// both flat
-			action = "hold";
-			reason = `score=${score.finalScore.toFixed(1)}, remaining flat`;
+			// current === "short"
+			if (target === "flat") {
+				action = "cover";
+				reason = `${veto}, covering short position`;
+			} else if (target === "long") {
+				// Flip: close short first; long opens next cycle
+				action = "cover";
+				reason = `score=${score.finalScore.toFixed(1)}, USD flipped bullish — covering short (will buy next cycle)`;
+			} else {
+				// target === "short": resize check
+				const sizeDiff = Math.abs(targetNotional - current.marketValue) / current.marketValue;
+				if (sizeDiff > 0.2) {
+					action = "resize_short";
+					reason = `score=${score.finalScore.toFixed(1)}, resize short ${current.marketValue.toFixed(0)} → ${targetNotional.toFixed(0)}`;
+				} else {
+					action = "hold";
+					reason = `score=${score.finalScore.toFixed(1)}, short size within 20% tolerance`;
+				}
+			}
 		}
 
 		decisions.push({
@@ -112,14 +145,25 @@ async function executeDecision(db: Db, decision: TradeDecision, marketOpen: bool
 
 	// US equities only when market is open; BTC always tradeable
 	const isEquity = decision.symbol !== "BTCUSD";
-	if (
-		isEquity &&
-		!marketOpen &&
-		(decision.action === "buy" || decision.action === "resize_up" || decision.action === "resize_down")
-	) {
+	const requiresMarketOpen =
+		decision.action === "buy" ||
+		decision.action === "sell" ||
+		decision.action === "resize_up" ||
+		decision.action === "resize_down" ||
+		decision.action === "short" ||
+		decision.action === "cover" ||
+		decision.action === "resize_short";
+
+	if (isEquity && !marketOpen && requiresMarketOpen) {
 		return {
 			symbol: decision.symbol,
-			side: "buy",
+			side:
+				decision.action === "short" ||
+				decision.action === "cover" ||
+				decision.action === "resize_short" ||
+				decision.action === "sell"
+					? "sell"
+					: "buy",
 			notional: decision.targetNotional,
 			qty: undefined,
 			alpacaOrderId: null,
@@ -140,12 +184,17 @@ async function executeDecision(db: Db, decision: TradeDecision, marketOpen: bool
 	}
 
 	// L1 stop-loss cooldown: block re-entry for 24h after a stop-loss event
-	if (decision.action === "buy" || decision.action === "resize_up") {
+	if (
+		decision.action === "buy" ||
+		decision.action === "resize_up" ||
+		decision.action === "short" ||
+		decision.action === "resize_short"
+	) {
 		if (isInStopLossCooldown(db, decision.symbol)) {
-			log.info({ symbol: decision.symbol }, "Buy skipped: L1 stop-loss cooldown active");
+			log.info({ symbol: decision.symbol }, "Entry skipped: L1 stop-loss cooldown active");
 			return {
 				symbol: decision.symbol,
-				side: "buy",
+				side: decision.action === "short" ? "sell" : "buy",
 				notional: decision.targetNotional,
 				qty: undefined,
 				alpacaOrderId: null,
@@ -246,6 +295,127 @@ async function executeDecision(db: Db, decision: TradeDecision, marketOpen: bool
 				status: "submitted",
 			};
 		}
+
+		// ── Short: open new short position (UUP) ──────────
+		if (decision.action === "short") {
+			const order = await client.placeMarketOrder(alpacaSym, "sell", decision.targetNotional);
+
+			db.insert(orders)
+				.values({
+					alpacaOrderId: order.id,
+					symbol: decision.symbol,
+					side: "sell",
+					quantity: 0,
+					status: "submitted",
+					signalSnapshot,
+					createdAt: now,
+				})
+				.run();
+
+			log.info(
+				{ symbol: decision.symbol, notional: decision.targetNotional, orderId: order.id },
+				"Short order placed",
+			);
+
+			return {
+				symbol: decision.symbol,
+				side: "sell",
+				notional: decision.targetNotional,
+				qty: undefined,
+				alpacaOrderId: order.id,
+				status: "submitted",
+			};
+		}
+
+		// ── Cover: close existing short position ──────────
+		if (decision.action === "cover") {
+			const order = await client.closePosition(alpacaSym);
+			if (!order) {
+				return {
+					symbol: decision.symbol,
+					side: "buy",
+					notional: undefined,
+					qty: undefined,
+					alpacaOrderId: null,
+					status: "skipped",
+					error: "No short position to cover",
+				};
+			}
+
+			const qty = Math.abs(Number.parseFloat(order.qty));
+			const price = order.filled_avg_price ? Number.parseFloat(order.filled_avg_price) : 0;
+
+			const [dbOrder] = db
+				.insert(orders)
+				.values({
+					alpacaOrderId: order.id,
+					symbol: decision.symbol,
+					side: "buy",
+					quantity: qty,
+					status: "submitted",
+					signalSnapshot,
+					createdAt: now,
+				})
+				.returning()
+				.all();
+
+			if (dbOrder && price > 0) {
+				db.insert(tradeLog)
+					.values({
+						orderId: dbOrder.id,
+						symbol: decision.symbol,
+						side: "buy",
+						quantity: qty,
+						price,
+						pnlRealized: 0,
+						createdAt: now,
+					})
+					.run();
+			}
+
+			log.info({ symbol: decision.symbol, qty, orderId: order.id }, "Cover order placed");
+
+			return {
+				symbol: decision.symbol,
+				side: "buy",
+				notional: undefined,
+				qty,
+				alpacaOrderId: order.id,
+				status: "submitted",
+			};
+		}
+
+		// ── Resize short: close then re-short at new notional ──
+		if (decision.action === "resize_short") {
+			await client.closePosition(alpacaSym);
+			const order = await client.placeMarketOrder(alpacaSym, "sell", decision.targetNotional);
+
+			db.insert(orders)
+				.values({
+					alpacaOrderId: order.id,
+					symbol: decision.symbol,
+					side: "sell",
+					quantity: 0,
+					status: "submitted",
+					signalSnapshot,
+					createdAt: now,
+				})
+				.run();
+
+			log.info(
+				{ symbol: decision.symbol, notional: decision.targetNotional, orderId: order.id },
+				"Resize short order placed",
+			);
+
+			return {
+				symbol: decision.symbol,
+				side: "sell",
+				notional: decision.targetNotional,
+				qty: undefined,
+				alpacaOrderId: order.id,
+				status: "submitted",
+			};
+		}
 	} catch (err) {
 		const message = err instanceof Error ? err.message : String(err);
 		log.error({ symbol: decision.symbol, action: decision.action, error: message }, "Order execution failed");
@@ -276,16 +446,17 @@ async function syncPositionsToDb(db: Db): Promise<void> {
 	const alpacaPositions = await client.getPositions();
 	const now = new Date().toISOString();
 
-	for (const sym of ["SPY", "QQQ", "IWM", "BTCUSD"] as TradedSymbol[]) {
+	for (const sym of ["SPY", "QQQ", "IWM", "BTCUSD", "UUP"] as TradedSymbol[]) {
 		const alpacaSym = ALPACA_SYMBOLS[sym];
 		const p = alpacaPositions.find((ap) => ap.symbol === alpacaSym);
 
 		if (p) {
+			const direction: "long" | "short" = p.side === "short" ? "short" : "long";
 			db.insert(positions)
 				.values({
 					symbol: sym,
-					direction: "long",
-					quantity: Number.parseFloat(p.qty),
+					direction,
+					quantity: Math.abs(Number.parseFloat(p.qty)),
 					avgCost: Number.parseFloat(p.avg_entry_price),
 					currentPrice: Number.parseFloat(p.current_price),
 					unrealizedPnl: Number.parseFloat(p.unrealized_pl),
@@ -294,8 +465,8 @@ async function syncPositionsToDb(db: Db): Promise<void> {
 				.onConflictDoUpdate({
 					target: [positions.symbol],
 					set: {
-						direction: "long",
-						quantity: Number.parseFloat(p.qty),
+						direction,
+						quantity: Math.abs(Number.parseFloat(p.qty)),
 						avgCost: Number.parseFloat(p.avg_entry_price),
 						currentPrice: Number.parseFloat(p.current_price),
 						unrealizedPnl: Number.parseFloat(p.unrealized_pl),
@@ -347,13 +518,13 @@ export async function runTradeEngine(db: Db): Promise<TradeExecutionResult> {
 
 	// Score all instruments
 	const allScores = scoreAllInstruments(db);
-	const { SPY, QQQ, IWM, BTCUSD } = allScores;
+	const { SPY, QQQ, IWM, BTCUSD, UUP } = allScores;
 
 	// Get current positions
 	const currentPositions = await getCurrentPositions();
 
 	// Generate decisions
-	const decisions = makeDecisions({ SPY, QQQ, IWM, BTCUSD }, currentPositions);
+	const decisions = makeDecisions({ SPY, QQQ, IWM, BTCUSD, UUP }, currentPositions);
 
 	// Execute orders
 	const orderOutcomes: OrderOutcome[] = [];

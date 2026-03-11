@@ -10,10 +10,11 @@ const log = createChildLogger("executor");
 // ─── Config: Position targets ─────────────────────
 
 export const POSITION_TARGETS: Record<TradedSymbol, number> = {
-	SPY: 1000,
-	QQQ: 800,
-	IWM: 600,
-	BTCUSD: 500,
+	SPY: 10000,
+	QQQ: 10000,
+	IWM: 10000,
+	BTCUSD: 10000,
+	UUP: 10000,
 };
 
 // ─── Scoring thresholds ───────────────────────────
@@ -145,24 +146,24 @@ function getRotationModifier(symbol: TradedSymbol, curveSignal: string, regime: 
 	type CurveKey = "bull_steepener" | "bull_flattener" | "bear_steepener" | "bear_flattener";
 	const matrix: Record<CurveKey, Record<"hot" | "warm" | "cool", Record<TradedSymbol, number>>> = {
 		bull_steepener: {
-			cool: { QQQ: 5, SPY: 8, IWM: 15, BTCUSD: 0 },
-			warm: { QQQ: 0, SPY: 5, IWM: 10, BTCUSD: 0 },
-			hot: { QQQ: -5, SPY: 0, IWM: 8, BTCUSD: 0 },
+			cool: { QQQ: 5, SPY: 8, IWM: 15, BTCUSD: 0, UUP: 0 },
+			warm: { QQQ: 0, SPY: 5, IWM: 10, BTCUSD: 0, UUP: 0 },
+			hot: { QQQ: -5, SPY: 0, IWM: 8, BTCUSD: 0, UUP: 0 },
 		},
 		bull_flattener: {
-			cool: { QQQ: 15, SPY: 5, IWM: 0, BTCUSD: 0 },
-			warm: { QQQ: 8, SPY: 5, IWM: 0, BTCUSD: 0 },
-			hot: { QQQ: 5, SPY: 0, IWM: -5, BTCUSD: 0 },
+			cool: { QQQ: 15, SPY: 5, IWM: 0, BTCUSD: 0, UUP: 0 },
+			warm: { QQQ: 8, SPY: 5, IWM: 0, BTCUSD: 0, UUP: 0 },
+			hot: { QQQ: 5, SPY: 0, IWM: -5, BTCUSD: 0, UUP: 0 },
 		},
 		bear_steepener: {
-			cool: { QQQ: -15, SPY: -5, IWM: -5, BTCUSD: 0 },
-			warm: { QQQ: -10, SPY: -5, IWM: -5, BTCUSD: 0 },
-			hot: { QQQ: -8, SPY: 0, IWM: -5, BTCUSD: 0 },
+			cool: { QQQ: -15, SPY: -5, IWM: -5, BTCUSD: 0, UUP: 0 },
+			warm: { QQQ: -10, SPY: -5, IWM: -5, BTCUSD: 0, UUP: 0 },
+			hot: { QQQ: -8, SPY: 0, IWM: -5, BTCUSD: 0, UUP: 0 },
 		},
 		bear_flattener: {
-			cool: { QQQ: -15, SPY: -10, IWM: -8, BTCUSD: 0 },
-			warm: { QQQ: -15, SPY: -10, IWM: -8, BTCUSD: 0 },
-			hot: { QQQ: -15, SPY: -12, IWM: -10, BTCUSD: 0 },
+			cool: { QQQ: -15, SPY: -10, IWM: -8, BTCUSD: 0, UUP: 0 },
+			warm: { QQQ: -15, SPY: -10, IWM: -8, BTCUSD: 0, UUP: 0 },
+			hot: { QQQ: -15, SPY: -12, IWM: -10, BTCUSD: 0, UUP: 0 },
 		},
 	};
 	const entry = matrix[curveSignal as CurveKey];
@@ -191,7 +192,7 @@ function buildSentimentScore(compositeScore: number, weight: number): SubScore {
 function buildUsdModelScore(usdCompositeScore: number, symbol: TradedSymbol, weight: number): SubScore {
 	// USD strong (score>50) = headwind for equities, especially QQQ
 	// usd_normalized: +1 when USD bullish (bad for equities), mapped to negative contribution
-	const sensitivity: Record<TradedSymbol, number> = { QQQ: 1.0, SPY: 0.6, IWM: 0.2, BTCUSD: 0.5 };
+	const sensitivity: Record<TradedSymbol, number> = { QQQ: 1.0, SPY: 0.6, IWM: 0.2, BTCUSD: 0.5, UUP: 0 };
 	// (50 - score)/50: if score=70 (bullish USD) → -0.4; if score=30 (bearish USD) → +0.4
 	const usdDirection = (50 - usdCompositeScore) / 50;
 	const normalized = usdDirection * (sensitivity[symbol] ?? 0.5);
@@ -239,6 +240,7 @@ function buildCorrRegimeScore(regime: string, marketBias: string, weight: number
 
 // ─── Score → Position ─────────────────────────────
 
+/** Long-only instruments (SPY/QQQ/IWM/BTCUSD): flat or long */
 function scoreToPosition(
 	finalScore: number,
 	creditVeto: boolean,
@@ -263,6 +265,39 @@ function scoreToPosition(
 
 	// conflicted cap
 	if (marketBiasSignal === "conflicted" && direction === "long") {
+		sizeMultiplier = Math.min(sizeMultiplier, CONFLICTED_MAX_MULTIPLIER);
+	}
+
+	return { direction, sizeMultiplier };
+}
+
+/** Bidirectional instrument (UUP): long, short, or flat */
+function scoreToPositionBidirectional(
+	finalScore: number,
+	marketBiasSignal: string,
+): { direction: "long" | "short" | "flat"; sizeMultiplier: number } {
+	let direction: "long" | "short" | "flat";
+	let sizeMultiplier: number;
+
+	if (finalScore >= FULL_LONG_THRESHOLD) {
+		direction = "long";
+		sizeMultiplier = 1.0;
+	} else if (finalScore >= HALF_LONG_THRESHOLD) {
+		direction = "long";
+		sizeMultiplier = 0.5;
+	} else if (finalScore <= -FULL_LONG_THRESHOLD) {
+		direction = "short";
+		sizeMultiplier = 1.0;
+	} else if (finalScore <= -HALF_LONG_THRESHOLD) {
+		direction = "short";
+		sizeMultiplier = 0.5;
+	} else {
+		direction = "flat";
+		sizeMultiplier = 0;
+	}
+
+	// conflicted cap applies to both long and short
+	if (marketBiasSignal === "conflicted" && direction !== "flat") {
 		sizeMultiplier = Math.min(sizeMultiplier, CONFLICTED_MAX_MULTIPLIER);
 	}
 
@@ -424,6 +459,95 @@ function scoreBtc(_db: Db, analysis: Map<string, AnalysisRow>): InstrumentScore 
 	};
 }
 
+// ─── UUP scorer ───────────────────────────────────
+
+function scoreUup(_db: Db, analysis: Map<string, AnalysisRow>, inflation: InflationRegime): InstrumentScore {
+	const usdRow = analysis.get("usd_model");
+	const liquidityRow = analysis.get("liquidity_signal");
+	const curveRow = analysis.get("yield_curve");
+	const biasRow = analysis.get("market_bias");
+
+	const usdMeta = usdRow?.metadata as { composite_score?: number } | undefined;
+	const usdComposite = usdMeta?.composite_score ?? 50;
+	const liquiditySignal = liquidityRow?.signal ?? "neutral";
+	const curveSignal = curveRow?.signal ?? "neutral";
+	const marketBiasSignal = biasRow?.signal ?? "neutral";
+
+	// Primary: USD model composite → normalized [-1, 1]
+	// composite=75 → +0.5, composite=50 → 0, composite=25 → -0.5
+	const usdNormalized = (usdComposite - 50) / 50;
+	const usdSub: SubScore = {
+		rawValue: usdComposite,
+		normalized: usdNormalized,
+		weight: 0.7,
+		contribution: usdNormalized * 0.7 * 100,
+		note: `usd_model_composite=${usdComposite.toFixed(1)}`,
+	};
+
+	// Liquidity: expanding = risk-on = weaker USD = short UUP
+	const liqMap: Record<string, number> = { expanding: -0.5, neutral: 0, contracting: 0.5 };
+	const liqNorm = liqMap[liquiditySignal] ?? 0;
+	const liqSub: SubScore = {
+		rawValue: liqNorm,
+		normalized: liqNorm,
+		weight: 0.15,
+		contribution: liqNorm * 0.15 * 100,
+		note: `liquidity=${liquiditySignal} (anti-corr DXY)`,
+	};
+
+	// Yield curve: bear_steepener = higher rates = USD positive
+	const curveMap: Record<string, number> = {
+		bear_steepener: 0.4,
+		bear_flattener: 0.2,
+		neutral: 0,
+		bull_flattener: -0.2,
+		bull_steepener: -0.3,
+	};
+	const curveNorm = curveMap[curveSignal] ?? 0;
+	const curveSub: SubScore = {
+		rawValue: curveNorm,
+		normalized: curveNorm,
+		weight: 0.15,
+		contribution: curveNorm * 0.15 * 100,
+		note: `yield_curve=${curveSignal} (USD impact)`,
+	};
+
+	const baseScore = usdSub.contribution + liqSub.contribution + curveSub.contribution;
+	const finalScore = baseScore;
+
+	const { direction, sizeMultiplier } = scoreToPositionBidirectional(finalScore, marketBiasSignal);
+	const notionalTarget = POSITION_TARGETS.UUP;
+	const notionalFinal = notionalTarget * sizeMultiplier;
+
+	const conflictNote =
+		marketBiasSignal === "conflicted"
+			? `market_bias=conflicted → UUP capped at ${CONFLICTED_MAX_MULTIPLIER * 100}% position`
+			: null;
+
+	return {
+		symbol: "UUP",
+		baseScore,
+		finalScore,
+		direction,
+		sizeMultiplier,
+		notionalTarget,
+		notionalFinal,
+		creditVeto: false, // credit stress often strengthens USD → no veto
+		btcSyncVeto: false,
+		inflationRegime: inflation,
+		evidence: {
+			liquidity: liqSub,
+			yieldCurve: curveSub,
+			sentiment: { rawValue: 0, normalized: 0, weight: 0, contribution: 0, note: "n/a for UUP" },
+			usdModel: usdSub,
+			btcEquityModifier: 0,
+			rotationNote: "USD model primary signal → UUP direction",
+			conflictNote,
+			corrRegimeNote: null,
+		},
+	};
+}
+
 // ─── Public entry point ───────────────────────────
 
 export interface AllScores {
@@ -431,6 +555,7 @@ export interface AllScores {
 	QQQ: InstrumentScore;
 	IWM: InstrumentScore;
 	BTCUSD: InstrumentScore;
+	UUP: InstrumentScore;
 	inflationRegime: InflationRegime;
 	marketBias: string;
 	marketBiasConfidence: string;
@@ -448,6 +573,7 @@ export function scoreAllInstruments(db: Db): AllScores {
 	const qqq = scoreEquity(db, "QQQ", analysis, inflation);
 	const iwm = scoreEquity(db, "IWM", analysis, inflation);
 	const btc = scoreBtc(db, analysis);
+	const uup = scoreUup(db, analysis, inflation);
 
 	log.info(
 		{
@@ -457,9 +583,19 @@ export function scoreAllInstruments(db: Db): AllScores {
 			QQQ: { score: qqq.finalScore.toFixed(1), dir: qqq.direction, mult: qqq.sizeMultiplier },
 			IWM: { score: iwm.finalScore.toFixed(1), dir: iwm.direction, mult: iwm.sizeMultiplier },
 			BTC: { score: btc.finalScore.toFixed(1), dir: btc.direction, mult: btc.sizeMultiplier },
+			UUP: { score: uup.finalScore.toFixed(1), dir: uup.direction, mult: uup.sizeMultiplier },
 		},
 		"Instrument scores computed",
 	);
 
-	return { SPY: spy, QQQ: qqq, IWM: iwm, BTCUSD: btc, inflationRegime: inflation, marketBias, marketBiasConfidence };
+	return {
+		SPY: spy,
+		QQQ: qqq,
+		IWM: iwm,
+		BTCUSD: btc,
+		UUP: uup,
+		inflationRegime: inflation,
+		marketBias,
+		marketBiasConfidence,
+	};
 }
