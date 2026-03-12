@@ -16,7 +16,7 @@ export {
 	updateDrawdownTier,
 	updateHighWaterMarks,
 } from "./risk-manager.js";
-export { POSITION_TARGETS, scoreAllInstruments } from "./signal-scorer.js";
+export { getPositionCap, POSITION_MAX_PCT, scoreAllInstruments } from "./signal-scorer.js";
 export { previewScores, runTradeEngine } from "./trade-engine.js";
 export type {
 	InflationRegime,

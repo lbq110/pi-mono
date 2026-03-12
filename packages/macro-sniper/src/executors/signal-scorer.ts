@@ -9,15 +9,15 @@ import type { InflationRegime, InstrumentScore, SubScore, TradedSymbol } from ".
 
 const log = createChildLogger("executor");
 
-// ─── Config: Position targets ─────────────────────
+// ─── Config: Position limits ──────────────────────
 
-export const POSITION_TARGETS: Record<TradedSymbol, number> = {
-	SPY: 10000,
-	QQQ: 10000,
-	IWM: 10000,
-	BTCUSD: 10000,
-	UUP: 10000,
-};
+/** Maximum position size per instrument as a fraction of account equity */
+export const POSITION_MAX_PCT = 0.2; // 20%
+
+/** Compute the per-instrument position cap from account equity */
+export function getPositionCap(accountEquity: number): number {
+	return Math.round(accountEquity * POSITION_MAX_PCT);
+}
 
 // ─── Scoring thresholds ───────────────────────────
 
@@ -327,6 +327,7 @@ function scoreEquity(
 	symbol: "SPY" | "QQQ" | "IWM",
 	analysis: Map<string, AnalysisRow>,
 	inflation: InflationRegime,
+	positionCap: number,
 ): InstrumentScore {
 	const weights: Record<
 		"SPY" | "QQQ" | "IWM",
@@ -384,7 +385,7 @@ function scoreEquity(
 
 	const { direction, sizeMultiplier } = scoreToPosition(finalScore, creditVeto, false, marketBiasSignal);
 
-	const notionalTarget = POSITION_TARGETS[symbol];
+	const notionalTarget = positionCap;
 	const notionalFinal = notionalTarget * sizeMultiplier;
 
 	return {
@@ -411,7 +412,7 @@ function scoreEquity(
 	};
 }
 
-function scoreBtc(_db: Db, analysis: Map<string, AnalysisRow>): InstrumentScore {
+function scoreBtc(_db: Db, analysis: Map<string, AnalysisRow>, positionCap: number): InstrumentScore {
 	const btcRow = analysis.get("btc_signal");
 	const corrRow = analysis.get("correlation_matrix");
 	const sentimentRow = analysis.get("sentiment_signal");
@@ -446,7 +447,7 @@ function scoreBtc(_db: Db, analysis: Map<string, AnalysisRow>): InstrumentScore 
 
 	const { direction, sizeMultiplier } = scoreToPosition(finalScore, false, btcSyncVeto, marketBiasSignal);
 
-	const notionalTarget = POSITION_TARGETS.BTCUSD;
+	const notionalTarget = positionCap;
 	const notionalFinal = notionalTarget * sizeMultiplier;
 
 	return {
@@ -477,7 +478,12 @@ function scoreBtc(_db: Db, analysis: Map<string, AnalysisRow>): InstrumentScore 
 
 // ─── UUP scorer ───────────────────────────────────
 
-function scoreUup(_db: Db, analysis: Map<string, AnalysisRow>, inflation: InflationRegime): InstrumentScore {
+function scoreUup(
+	_db: Db,
+	analysis: Map<string, AnalysisRow>,
+	inflation: InflationRegime,
+	positionCap: number,
+): InstrumentScore {
 	const usdRow = analysis.get("usd_model");
 	const liquidityRow = analysis.get("liquidity_signal");
 	const curveRow = analysis.get("yield_curve");
@@ -532,7 +538,7 @@ function scoreUup(_db: Db, analysis: Map<string, AnalysisRow>, inflation: Inflat
 	const finalScore = baseScore;
 
 	const { direction, sizeMultiplier } = scoreToPositionBidirectional(finalScore, marketBiasSignal);
-	const notionalTarget = POSITION_TARGETS.UUP;
+	const notionalTarget = positionCap;
 	const notionalFinal = notionalTarget * sizeMultiplier;
 
 	const conflictNote =
@@ -691,12 +697,16 @@ export function scoreAllInstruments(db: Db, accountEquity?: number): AllScores {
 	const biasMeta = biasRow?.metadata as { confidence?: string } | undefined;
 	const marketBiasConfidence = biasMeta?.confidence ?? "low";
 
+	// Compute per-instrument position cap from equity
+	const equity = accountEquity ?? 100000;
+	const positionCap = getPositionCap(equity);
+
 	// Base scores (before adjustments)
-	const spy = scoreEquity(db, "SPY", analysis, inflation);
-	const qqq = scoreEquity(db, "QQQ", analysis, inflation);
-	const iwm = scoreEquity(db, "IWM", analysis, inflation);
-	const btc = scoreBtc(db, analysis);
-	const uup = scoreUup(db, analysis, inflation);
+	const spy = scoreEquity(db, "SPY", analysis, inflation, positionCap);
+	const qqq = scoreEquity(db, "QQQ", analysis, inflation, positionCap);
+	const iwm = scoreEquity(db, "IWM", analysis, inflation, positionCap);
+	const btc = scoreBtc(db, analysis, positionCap);
+	const uup = scoreUup(db, analysis, inflation, positionCap);
 
 	const scores: Record<TradedSymbol, InstrumentScore> = { SPY: spy, QQQ: qqq, IWM: iwm, BTCUSD: btc, UUP: uup };
 
@@ -704,7 +714,6 @@ export function scoreAllInstruments(db: Db, accountEquity?: number): AllScores {
 	applyCorrelationPenalty(scores, analysis);
 
 	// ─── Layer 2: ATR-based position sizing ───────
-	const equity = accountEquity ?? 100000;
 	const atrMap = computeAllATRs(db);
 
 	for (const score of Object.values(scores)) {

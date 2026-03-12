@@ -27,7 +27,7 @@ export interface InstrumentScore {
 	finalScore: number; // after BTC equity modifier (or USD direct mapping)
 	direction: "long" | "short" | "flat"; // "short" only for UUP
 	sizeMultiplier: number; // 0 | 0.5 | 0.75 | 1.0
-	notionalTarget: number; // from config ($10,000 for all)
+	notionalTarget: number; // equity × POSITION_MAX_PCT (20%), then ATR-adjusted
 	notionalFinal: number; // notionalTarget × sizeMultiplier
 	creditVeto: boolean; // credit_risk = risk_off_confirmed
 	btcSyncVeto: boolean; // BTC: synchronized + risk_off
