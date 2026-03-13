@@ -49,21 +49,11 @@ export const VIX_GREED_FLOOR = 12;
 export const MOVE_FEAR_CEIL = 180;
 export const MOVE_GREED_FLOOR = 80;
 
-/** BTC ETF 7-day cumulative net inflow normalization (unit: hundred million USD) */
-export const ETF_FLOW_UPPER = 5;
-export const ETF_FLOW_LOWER = -5;
-
-/** BTC OI 7-day change rate normalization */
-export const OI_CHANGE_UPPER = 0.1;
-export const OI_CHANGE_LOWER = -0.1;
-
-/** Indicator weights */
+/** Indicator weights (VIX + MOVE + Fear&Greed = 1.0) */
 export const SENTIMENT_WEIGHTS = {
-	vix: 0.25,
-	move: 0.15,
-	fearGreed: 0.2,
-	etfFlow: 0.2,
-	oiChange: 0.2,
+	vix: 0.35,
+	move: 0.25,
+	fearGreed: 0.4,
 };
 
 /** Sentiment bracket thresholds */
@@ -71,6 +61,49 @@ export const SENTIMENT_EXTREME_FEAR = 20;
 export const SENTIMENT_FEAR = 40;
 export const SENTIMENT_GREED = 60;
 export const SENTIMENT_EXTREME_GREED = 80;
+
+// ─── D2. BTC Signal Thresholds ───────────────────
+
+/** BTC signal pillar weights (4 pillars, sum = 1.0) */
+export const BTC_SIGNAL_WEIGHTS = {
+	/** Price technicals: MA7d, volume, momentum */
+	technicals: 0.3,
+	/** Derivatives: funding rate, long/short, OI change, taker ratio */
+	derivatives: 0.3,
+	/** On-chain: MVRV, exchange netflow, active addresses */
+	onchain: 0.2,
+	/** ETF: dollar volume ratio as flow proxy */
+	etfFlow: 0.2,
+};
+
+/** Funding rate normalization: typical range ±0.03% (8h) */
+export const FUNDING_RATE_HIGH = 0.001; // 0.1% = extreme bullish crowding
+export const FUNDING_RATE_LOW = -0.001; // -0.1% = extreme bearish
+
+/** Long/short ratio normalization: typical range 0.8-2.0 */
+export const LONG_SHORT_RATIO_HIGH = 2.0;
+export const LONG_SHORT_RATIO_LOW = 0.8;
+
+/** Taker buy/sell ratio: > 1 = bullish, < 1 = bearish */
+export const TAKER_RATIO_HIGH = 1.3;
+export const TAKER_RATIO_LOW = 0.7;
+
+/** OI 7-day change rate: ±10% is significant */
+export const OI_CHANGE_RATE_HIGH = 0.1;
+export const OI_CHANGE_RATE_LOW = -0.1;
+
+/** MVRV: < 1.0 = undervalued, > 3.5 = overheated */
+export const MVRV_UNDERVALUED = 1.0;
+export const MVRV_FAIR = 2.0;
+export const MVRV_OVERHEATED = 3.5;
+
+/** Exchange netflow (BTC): positive = selling pressure, negative = accumulation */
+export const EXCHANGE_NETFLOW_SELL_THRESHOLD = 500; // BTC, net inflow
+export const EXCHANGE_NETFLOW_ACCUM_THRESHOLD = -500; // BTC, net outflow
+
+/** ETF dollar volume: ratio vs 20-day MA — above 1.3 = strong, below 0.7 = weak */
+export const ETF_VOLUME_RATIO_HIGH = 1.3;
+export const ETF_VOLUME_RATIO_LOW = 0.7;
 
 // ─── F. USD Model Thresholds ─────────────────────
 

@@ -176,3 +176,190 @@ export async function fetchBtcOpenInterest(): Promise<{ openInterest: number; da
 
 	return null;
 }
+
+// ─── Binance Futures Derivatives Data (public, no key) ────
+
+/**
+ * Fetch BTC/USDT funding rate history.
+ * Returns the most recent funding rate entry (8h interval).
+ */
+export async function fetchBtcFundingRate(
+	limit = 3,
+): Promise<{ fundingRate: number; fundingTime: number; date: string } | null> {
+	const url = `https://fapi.binance.com/fapi/v1/fundingRate?symbol=BTCUSDT&limit=${limit}`;
+
+	for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+		try {
+			const response = await fetch(url);
+			if (!response.ok) throw new Error(`Binance Futures API returned ${response.status}`);
+
+			const json = (await response.json()) as { fundingRate: string; fundingTime: number }[];
+			if (!json.length) return null;
+
+			const latest = json[json.length - 1];
+			const fundingRate = Number.parseFloat(latest.fundingRate);
+
+			return {
+				fundingRate,
+				fundingTime: latest.fundingTime,
+				date: new Date(latest.fundingTime).toISOString().split("T")[0],
+			};
+		} catch (error) {
+			const isLastAttempt = attempt === MAX_RETRIES;
+			const message = error instanceof Error ? error.message : String(error);
+			log.warn(
+				{ attempt, error: message },
+				isLastAttempt ? "BTC funding rate fetch failed" : "BTC funding rate fetch failed, retrying",
+			);
+			if (isLastAttempt) return null;
+			await new Promise((resolve) => setTimeout(resolve, RETRY_BASE_DELAY_MS * 2 ** (attempt - 1)));
+		}
+	}
+	return null;
+}
+
+/**
+ * Fetch top trader long/short account ratio (1h period).
+ * Values > 1 = more longs, < 1 = more shorts.
+ */
+export async function fetchBtcLongShortRatio(
+	limit = 1,
+): Promise<{ longShortRatio: number; longAccount: number; shortAccount: number; date: string } | null> {
+	const url = `https://fapi.binance.com/futures/data/topLongShortAccountRatio?symbol=BTCUSDT&period=1h&limit=${limit}`;
+
+	for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+		try {
+			const response = await fetch(url);
+			if (!response.ok) throw new Error(`Binance Futures API returned ${response.status}`);
+
+			const json = (await response.json()) as {
+				longShortRatio: string;
+				longAccount: string;
+				shortAccount: string;
+				timestamp: number;
+			}[];
+			if (!json.length) return null;
+
+			const latest = json[json.length - 1];
+			return {
+				longShortRatio: Number.parseFloat(latest.longShortRatio),
+				longAccount: Number.parseFloat(latest.longAccount),
+				shortAccount: Number.parseFloat(latest.shortAccount),
+				date: new Date(latest.timestamp).toISOString().split("T")[0],
+			};
+		} catch (error) {
+			const isLastAttempt = attempt === MAX_RETRIES;
+			const message = error instanceof Error ? error.message : String(error);
+			log.warn(
+				{ attempt, error: message },
+				isLastAttempt ? "BTC long/short ratio fetch failed" : "Retrying long/short ratio",
+			);
+			if (isLastAttempt) return null;
+			await new Promise((resolve) => setTimeout(resolve, RETRY_BASE_DELAY_MS * 2 ** (attempt - 1)));
+		}
+	}
+	return null;
+}
+
+/**
+ * Fetch taker buy/sell volume ratio (1h period).
+ * buySellRatio > 1 = more taker buys (bullish), < 1 = more taker sells.
+ */
+export async function fetchBtcTakerRatio(
+	limit = 1,
+): Promise<{ buySellRatio: number; buyVol: number; sellVol: number; date: string } | null> {
+	const url = `https://fapi.binance.com/futures/data/takerlongshortRatio?symbol=BTCUSDT&period=1h&limit=${limit}`;
+
+	for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+		try {
+			const response = await fetch(url);
+			if (!response.ok) throw new Error(`Binance Futures API returned ${response.status}`);
+
+			const json = (await response.json()) as {
+				buySellRatio: string;
+				buyVol: string;
+				sellVol: string;
+				timestamp: number;
+			}[];
+			if (!json.length) return null;
+
+			const latest = json[json.length - 1];
+			return {
+				buySellRatio: Number.parseFloat(latest.buySellRatio),
+				buyVol: Number.parseFloat(latest.buyVol),
+				sellVol: Number.parseFloat(latest.sellVol),
+				date: new Date(latest.timestamp).toISOString().split("T")[0],
+			};
+		} catch (error) {
+			const isLastAttempt = attempt === MAX_RETRIES;
+			const message = error instanceof Error ? error.message : String(error);
+			log.warn({ attempt, error: message }, isLastAttempt ? "BTC taker ratio fetch failed" : "Retrying taker ratio");
+			if (isLastAttempt) return null;
+			await new Promise((resolve) => setTimeout(resolve, RETRY_BASE_DELAY_MS * 2 ** (attempt - 1)));
+		}
+	}
+	return null;
+}
+
+/**
+ * Fetch historical open interest to compute 7-day change rate.
+ * Uses 4h interval, 42 bars ≈ 7 days.
+ * Returns { currentOI, oiChangeRate7d } where rate = (current - 7dAgo) / 7dAgo.
+ */
+export async function fetchBtcOIChangeRate(): Promise<{
+	currentOI: number;
+	oi7dAgo: number;
+	oiChangeRate7d: number;
+	date: string;
+} | null> {
+	// Use 4h interval: 6 bars/day × 7 days = 42 bars
+	const url = "https://fapi.binance.com/futures/data/openInterestHist?symbol=BTCUSDT&period=4h&limit=42";
+
+	for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+		try {
+			const response = await fetch(url);
+			if (!response.ok) throw new Error(`Binance Futures API returned ${response.status}`);
+
+			const json = (await response.json()) as {
+				sumOpenInterest: string;
+				sumOpenInterestValue: string;
+				timestamp: number;
+			}[];
+
+			if (json.length < 10) {
+				log.warn({ bars: json.length }, "Insufficient OI history for 7d change");
+				return null;
+			}
+
+			const currentOI = Number.parseFloat(json[json.length - 1].sumOpenInterestValue);
+			const oi7dAgo = Number.parseFloat(json[0].sumOpenInterestValue);
+
+			if (oi7dAgo === 0) return null;
+
+			const oiChangeRate7d = (currentOI - oi7dAgo) / oi7dAgo;
+
+			log.debug(
+				{
+					currentOI: `$${(currentOI / 1e9).toFixed(2)}B`,
+					oi7dAgo: `$${(oi7dAgo / 1e9).toFixed(2)}B`,
+					changeRate: `${(oiChangeRate7d * 100).toFixed(2)}%`,
+				},
+				"BTC OI 7d change computed",
+			);
+
+			return {
+				currentOI,
+				oi7dAgo,
+				oiChangeRate7d,
+				date: new Date(json[json.length - 1].timestamp).toISOString().split("T")[0],
+			};
+		} catch (error) {
+			const isLastAttempt = attempt === MAX_RETRIES;
+			const message = error instanceof Error ? error.message : String(error);
+			log.warn({ attempt, error: message }, isLastAttempt ? "BTC OI history fetch failed" : "Retrying OI history");
+			if (isLastAttempt) return null;
+			await new Promise((resolve) => setTimeout(resolve, RETRY_BASE_DELAY_MS * 2 ** (attempt - 1)));
+		}
+	}
+	return null;
+}

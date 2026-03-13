@@ -1,7 +1,15 @@
 import type { Db } from "../db/client.js";
 import { sentimentSnapshots } from "../db/schema.js";
 import { createChildLogger } from "../logger.js";
-import { fetchBtc24hStats, fetchBtcOpenInterest } from "./binance.js";
+import {
+	fetchBtc24hStats,
+	fetchBtcFundingRate,
+	fetchBtcLongShortRatio,
+	fetchBtcOIChangeRate,
+	fetchBtcOpenInterest,
+	fetchBtcTakerRatio,
+} from "./binance.js";
+import { fetchCoinMetrics } from "./coinmetrics.js";
 import { fetchFredSeries } from "./fred.js";
 import { fetchYahooQuote } from "./yahoo.js";
 
@@ -88,16 +96,150 @@ export async function collectSentiment(
 		log.error({ error: message }, "Failed to collect BTC price");
 	}
 
-	// BTC OI from Binance Futures (public, no key required)
+	// BTC OI from Binance Futures (current snapshot)
 	try {
 		const oi = await fetchBtcOpenInterest();
 		if (oi) {
 			upsertSentiment(db, "binance", "btc_oi", oi.openInterest, today);
-			log.info({ oi: oi.openInterest }, "BTC OI collected from Binance Futures");
+			log.info({ oi: oi.openInterest }, "BTC OI snapshot collected");
 		}
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
 		log.error({ error: message }, "Failed to collect BTC OI");
+	}
+
+	// ─── BTC Derivatives (Binance Futures) ────────────
+
+	// OI 7-day change rate (fixes the absolute-OI bug)
+	try {
+		const oiChange = await fetchBtcOIChangeRate();
+		if (oiChange) {
+			upsertSentiment(db, "binance", "btc_oi_change_7d", oiChange.oiChangeRate7d, today);
+			upsertSentiment(db, "binance", "btc_oi_current", oiChange.currentOI, today);
+			log.info(
+				{ changeRate: `${(oiChange.oiChangeRate7d * 100).toFixed(2)}%`, currentOI: oiChange.currentOI },
+				"BTC OI 7d change collected",
+			);
+		}
+	} catch (error) {
+		const message = error instanceof Error ? error.message : String(error);
+		log.error({ error: message }, "Failed to collect BTC OI change rate");
+	}
+
+	// Funding rate
+	try {
+		const fr = await fetchBtcFundingRate();
+		if (fr) {
+			upsertSentiment(db, "binance", "btc_funding_rate", fr.fundingRate, today);
+			log.info({ fundingRate: fr.fundingRate }, "BTC funding rate collected");
+		}
+	} catch (error) {
+		const message = error instanceof Error ? error.message : String(error);
+		log.error({ error: message }, "Failed to collect BTC funding rate");
+	}
+
+	// Top trader long/short ratio
+	try {
+		const ls = await fetchBtcLongShortRatio();
+		if (ls) {
+			upsertSentiment(db, "binance", "btc_long_short_ratio", ls.longShortRatio, today);
+			log.info({ longShortRatio: ls.longShortRatio }, "BTC long/short ratio collected");
+		}
+	} catch (error) {
+		const message = error instanceof Error ? error.message : String(error);
+		log.error({ error: message }, "Failed to collect BTC long/short ratio");
+	}
+
+	// Taker buy/sell ratio
+	try {
+		const tr = await fetchBtcTakerRatio();
+		if (tr) {
+			upsertSentiment(db, "binance", "btc_taker_buy_sell_ratio", tr.buySellRatio, today);
+			log.info({ buySellRatio: tr.buySellRatio }, "BTC taker ratio collected");
+		}
+	} catch (error) {
+		const message = error instanceof Error ? error.message : String(error);
+		log.error({ error: message }, "Failed to collect BTC taker ratio");
+	}
+
+	// ─── On-chain (CoinMetrics) ────────────────────────
+
+	try {
+		const cm = await fetchCoinMetrics();
+		if (cm) {
+			if (cm.mvrv !== null) upsertSentiment(db, "coinmetrics", "btc_mvrv", cm.mvrv, cm.date);
+			if (cm.marketCap !== null) upsertSentiment(db, "coinmetrics", "btc_market_cap", cm.marketCap, cm.date);
+			if (cm.realizedCap !== null) upsertSentiment(db, "coinmetrics", "btc_realized_cap", cm.realizedCap, cm.date);
+			if (cm.netExchangeFlow !== null)
+				upsertSentiment(db, "coinmetrics", "btc_net_exchange_flow", cm.netExchangeFlow, cm.date);
+			if (cm.exchangeInflow !== null)
+				upsertSentiment(db, "coinmetrics", "btc_exchange_inflow", cm.exchangeInflow, cm.date);
+			if (cm.exchangeOutflow !== null)
+				upsertSentiment(db, "coinmetrics", "btc_exchange_outflow", cm.exchangeOutflow, cm.date);
+			if (cm.activeAddresses !== null)
+				upsertSentiment(db, "coinmetrics", "btc_active_addresses", cm.activeAddresses, cm.date);
+			if (cm.txCount !== null) upsertSentiment(db, "coinmetrics", "btc_tx_count", cm.txCount, cm.date);
+			if (cm.hashRate !== null) upsertSentiment(db, "coinmetrics", "btc_hash_rate", cm.hashRate, cm.date);
+			log.info(
+				{
+					mvrv: cm.mvrv?.toFixed(2),
+					netFlow: cm.netExchangeFlow?.toFixed(2),
+					activeAddr: cm.activeAddresses?.toFixed(0),
+				},
+				"CoinMetrics on-chain data collected",
+			);
+		}
+	} catch (error) {
+		const message = error instanceof Error ? error.message : String(error);
+		log.error({ error: message }, "Failed to collect CoinMetrics data");
+	}
+
+	// ─── ETF Flow Proxy (Yahoo Finance) ────────────────
+
+	try {
+		const etfTickers = ["IBIT", "FBTC", "ARKB", "GBTC"];
+		let totalDollarVolume = 0;
+		let tickersCollected = 0;
+
+		for (const ticker of etfTickers) {
+			const quote = await fetchYahooQuote(ticker);
+			if (quote) {
+				// We need volume too — refetch with chart API for volume
+				const volResp = await fetch(
+					`https://query1.finance.yahoo.com/v8/finance/chart/${ticker}?range=1d&interval=1d`,
+					{ headers: { "User-Agent": "Mozilla/5.0 (compatible; macro-sniper/1.0)" } },
+				);
+				if (volResp.ok) {
+					const volJson = (await volResp.json()) as {
+						chart: {
+							result: {
+								indicators: { quote: { volume: (number | null)[] }[] };
+								meta: { regularMarketPrice: number };
+							}[];
+						};
+					};
+					const result = volJson.chart.result?.[0];
+					if (result) {
+						const vol = result.indicators.quote[0]?.volume?.[0] ?? 0;
+						const price = result.meta.regularMarketPrice;
+						const dollarVol = (vol ?? 0) * price;
+						totalDollarVolume += dollarVol;
+						tickersCollected++;
+					}
+				}
+			}
+		}
+
+		if (tickersCollected > 0) {
+			upsertSentiment(db, "yahoo", "btc_etf_dollar_volume", totalDollarVolume, today);
+			log.info(
+				{ totalDollarVolume: `$${(totalDollarVolume / 1e6).toFixed(0)}M`, tickers: tickersCollected },
+				"BTC ETF dollar volume proxy collected",
+			);
+		}
+	} catch (error) {
+		const message = error instanceof Error ? error.message : String(error);
+		log.error({ error: message }, "Failed to collect BTC ETF flow proxy");
 	}
 
 	// SPY / QQQ / IWM / GLD / UUP / DXY from Yahoo Finance (equity proxies + FX)

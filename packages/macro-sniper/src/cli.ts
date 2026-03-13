@@ -290,6 +290,65 @@ program
 		closeDb();
 	});
 
+program
+	.command("btc")
+	.description("View latest BTC signal (4-pillar: technicals + derivatives + on-chain + ETF)")
+	.action(() => {
+		const db = initDb();
+		const rows = db
+			.select()
+			.from(analysisResults)
+			.where(eq(analysisResults.type, "btc_signal"))
+			.orderBy(desc(analysisResults.createdAt))
+			.limit(1)
+			.all();
+
+		if (rows.length === 0) {
+			console.log("No BTC signal found. Run: macro-sniper collect sentiment && macro-sniper analyze btc");
+		} else {
+			const row = rows[0];
+			const meta = typeof row.metadata === "string" ? JSON.parse(row.metadata) : row.metadata;
+			console.log(`Date: ${row.date}`);
+			console.log(`Signal: ${row.signal}`);
+			console.log(`\n── Pillar Scores ──`);
+			console.log(`  Technicals:  ${meta.technicals_score?.toFixed(1) ?? "n/a"}/100  (wt=30%)`);
+			console.log(`  Derivatives: ${meta.derivatives_score?.toFixed(1) ?? "n/a"}/100  (wt=30%)`);
+			console.log(`  On-chain:    ${meta.onchain_score?.toFixed(1) ?? "n/a"}/100  (wt=20%)`);
+			console.log(`  ETF Flow:    ${meta.etf_flow_score?.toFixed(1) ?? "n/a"}/100  (wt=20%)`);
+			console.log(`  Composite:   ${meta.composite_score?.toFixed(1) ?? "n/a"}/100`);
+			console.log(`\n── Technicals ──`);
+			console.log(`  Price:     $${meta.btc_price?.toFixed(0)}`);
+			console.log(`  MA7d:      $${meta.ma7d?.toFixed(0)}  (${meta.above_ma7d ? "above" : "below"})`);
+			console.log(`  Change24h: ${meta.change_pct_24h?.toFixed(2)}%`);
+			console.log(
+				`  Volume:    ratio=${meta.volume_ratio?.toFixed(2)}  ${meta.volume_expanding ? "EXPANDING" : ""}`,
+			);
+			console.log(`\n── Derivatives ──`);
+			console.log(
+				`  Funding:     ${meta.funding_rate !== null ? `${(meta.funding_rate * 100).toFixed(4)}%` : "n/a"}`,
+			);
+			console.log(`  L/S Ratio:   ${meta.long_short_ratio?.toFixed(4) ?? "n/a"}`);
+			console.log(`  Taker B/S:   ${meta.taker_buy_sell_ratio?.toFixed(4) ?? "n/a"}`);
+			console.log(
+				`  OI 7d Chg:   ${meta.oi_change_7d !== null ? `${(meta.oi_change_7d * 100).toFixed(2)}%` : "n/a"}`,
+			);
+			console.log(`\n── On-chain ──`);
+			console.log(`  MVRV:        ${meta.mvrv?.toFixed(4) ?? "n/a"}`);
+			console.log(`  Net Ex Flow: ${meta.net_exchange_flow?.toFixed(2) ?? "n/a"} BTC`);
+			console.log(`  Active Addr: ${meta.active_addresses?.toFixed(0) ?? "n/a"}`);
+			console.log(`\n── ETF Flow ──`);
+			console.log(
+				`  Dollar Vol:  $${meta.etf_dollar_volume ? `${(meta.etf_dollar_volume / 1e6).toFixed(0)}M` : "n/a"}`,
+			);
+			console.log(`  Vol Ratio:   ${meta.etf_volume_ratio?.toFixed(2) ?? "n/a"}`);
+			console.log(`\n  Equity Modifier: ${meta.equity_score_modifier}`);
+			if (meta.stale_sources?.length > 0) {
+				console.log(`  Stale: ${meta.stale_sources.join(", ")}`);
+			}
+		}
+		closeDb();
+	});
+
 // ─── report commands ─────────────────────────────
 
 const report = program.command("report").description("Daily report operations");

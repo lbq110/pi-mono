@@ -132,12 +132,20 @@ export function seedCreditBreach(db: Db): void {
 /** Seed sentiment snapshot data. */
 export function seedSentiment(db: Db): void {
 	const rows = [
+		// Market-wide sentiment (used by sentiment-signal.ts)
 		{ source: "fred", metric: "VIXCLS", value: 18.5 },
 		{ source: "yahoo", metric: "MOVE", value: 95.0 },
 		{ source: "alternative_me", metric: "fear_greed", value: 55 },
+		// BTC data (used by btc-signal.ts)
 		{ source: "binance", metric: "btc_price", value: 67500 },
-		{ source: "sosovalue", metric: "etf_flow_7d", value: 2.5 },
-		{ source: "binance", metric: "btc_oi", value: 0.03 },
+		{ source: "binance", metric: "btc_oi_change_7d", value: 0.03 },
+		{ source: "binance", metric: "btc_funding_rate", value: 0.0001 },
+		{ source: "binance", metric: "btc_long_short_ratio", value: 1.2 },
+		{ source: "binance", metric: "btc_taker_buy_sell_ratio", value: 1.05 },
+		{ source: "coinmetrics", metric: "btc_mvrv", value: 1.8 },
+		{ source: "coinmetrics", metric: "btc_net_exchange_flow", value: -500 },
+		{ source: "coinmetrics", metric: "btc_active_addresses", value: 700000 },
+		{ source: "yahoo", metric: "btc_etf_dollar_volume", value: 3000000000 },
 	];
 	for (const r of rows) {
 		db.insert(schema.sentimentSnapshots)
@@ -153,8 +161,11 @@ export function seedSentimentExtremeFear(db: Db): void {
 		{ source: "yahoo", metric: "MOVE", value: 200 },
 		{ source: "alternative_me", metric: "fear_greed", value: 5 },
 		{ source: "binance", metric: "btc_price", value: 30000 },
-		{ source: "sosovalue", metric: "etf_flow_7d", value: -8 },
-		{ source: "binance", metric: "btc_oi", value: -0.15 },
+		{ source: "binance", metric: "btc_oi_change_7d", value: -0.15 },
+		{ source: "binance", metric: "btc_funding_rate", value: -0.0005 },
+		{ source: "binance", metric: "btc_long_short_ratio", value: 0.6 },
+		{ source: "coinmetrics", metric: "btc_mvrv", value: 0.8 },
+		{ source: "coinmetrics", metric: "btc_net_exchange_flow", value: 2000 },
 	];
 	for (const r of rows) {
 		db.insert(schema.sentimentSnapshots)

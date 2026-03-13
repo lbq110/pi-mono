@@ -48,13 +48,27 @@
 - Daily report §10 (交易信号详解): score breakdown, ATR, Kelly, signal decomposition
 - Report prompt now includes BTC signal, correlation matrix, positions, scores, ATR, and risk state data
 
+- CoinMetrics Community API collector (`src/collectors/coinmetrics.ts`): MVRV, market cap, realized cap, exchange inflow/outflow, active addresses, transaction count, hash rate — all free, no API key
+- Binance Futures derivatives data: funding rate, top trader long/short ratio, taker buy/sell ratio, OI 7d change rate — all public endpoints
+- BTC ETF flow proxy: IBIT+FBTC+ARKB+GBTC combined daily dollar volume from Yahoo Finance as net flow approximation
+- BTC signal 4-pillar model: technicals (30%) + derivatives (30%) + on-chain (20%) + ETF flow (20%) weighted composite
+- New BTC signal metadata: `technicals_score`, `derivatives_score`, `onchain_score`, `etf_flow_score`, `composite_score`, `funding_rate`, `long_short_ratio`, `taker_buy_sell_ratio`, `oi_change_7d`, `mvrv`, `net_exchange_flow`, `active_addresses`, `etf_dollar_volume`, `etf_volume_ratio`
+- New thresholds: MVRV (1.0/2.0/3.5), funding rate (±0.1%), long/short ratio (0.8-2.0), taker ratio (0.7-1.3), OI change rate (±10%), exchange netflow (±500 BTC), ETF volume ratio (0.7-1.3)
+- CLI command `macro-sniper btc`: displays 4-pillar BTC signal breakdown
+
 ### Changed
 
+- USD model equity impact: replaced one-dimensional "USD strong = bad for stocks" with driver-aware weighted blend — each sub-factor (rate support, risk premium, convenience yield, hedge transmission, global relative) now has its own impact multiplier based on what is driving USD strength/weakness
+- Key behavioral changes: economic strength driving USD up no longer penalizes stocks as heavily (×0.5); US-specific risk making USD weak now correctly hurts stocks (sign flip, ×−0.8); convenience yield changes have minimal stock impact (×0.3)
 - Default LLM_MODEL_FAST changed to `gemini-3.1-flash-lite-preview` (faster, cheaper than gemini-2.5-flash)
 - Replaced CoinGecko and Coinglass with Binance public API for BTC price and open interest data (zero API keys needed)
 - Daily report expanded from 9 to 12 sections (added §8-§10, renumbered §8→§11, §9→§12)
+- BTC signal: upgraded from simple MA7d+volume model to 4-pillar weighted composite (technicals, derivatives, on-chain, ETF)
+- Sentiment signal: simplified to 3-factor model (VIX 35%, MOVE 25%, Fear&Greed 40%) — removed BTC-specific ETF flow and OI change (moved to BTC signal)
+- OI data: fixed bug where absolute OI value was stored and normalized as if it were a change rate — now correctly computes 7d change rate from `openInterestHist` endpoint
 
 ### Removed
 
 - Removed CoinGecko API dependency (COINGECKO_API_KEY no longer needed)
 - Removed Coinglass API dependency (COINGLASS_API_KEY no longer needed)
+- Removed SoSoValue ETF flow data source (never collected, always defaulted to 50)

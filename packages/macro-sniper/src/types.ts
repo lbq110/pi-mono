@@ -59,11 +59,6 @@ export const sentimentSignalMetadataSchema = z.object({
 	move_score: z.number(),
 	fear_greed_index: z.number(),
 	fear_greed_score: z.number(),
-	btc_price: z.number(),
-	etf_flow_7d: z.number(),
-	etf_flow_score: z.number(),
-	oi_change_7d: z.number(),
-	oi_change_score: z.number(),
 	composite_score: z.number(),
 	stale: z.boolean().default(false),
 	stale_sources: z.array(z.string()).default([]),
@@ -147,6 +142,7 @@ export type UsdModelSignalMetadata = z.infer<typeof usdModelSignalMetadataSchema
 // ─── BTC Signal Metadata ─────────────────────────
 
 export const btcSignalMetadataSchema = z.object({
+	// Price technicals
 	btc_price: z.number(),
 	ma7d: z.number(),
 	price_vs_ma_pct: z.number(), // (price - ma7d) / ma7d * 100
@@ -157,9 +153,33 @@ export const btcSignalMetadataSchema = z.object({
 	volume_expanding: z.boolean(), // volume_ratio > 1.2
 	change_pct_24h: z.number(),
 	sharp_drop_alert: z.boolean(), // change_pct_24h < -5%
-	equity_score_modifier: z.number(), // +5 bullish, -10 sharp drop, 0 neutral
 	daily_closes: z.array(z.number()), // last 7 daily closes (oldest first)
+	technicals_score: z.number(), // 0-100 pillar score
+
+	// Derivatives
+	funding_rate: z.number().nullable(),
+	long_short_ratio: z.number().nullable(),
+	taker_buy_sell_ratio: z.number().nullable(),
+	oi_change_7d: z.number().nullable(), // 7d change rate (not absolute)
+	oi_current: z.number().nullable(), // current OI in USD
+	derivatives_score: z.number(), // 0-100 pillar score
+
+	// On-chain
+	mvrv: z.number().nullable(),
+	net_exchange_flow: z.number().nullable(), // positive = selling pressure
+	active_addresses: z.number().nullable(),
+	onchain_score: z.number(), // 0-100 pillar score
+
+	// ETF flow proxy
+	etf_dollar_volume: z.number().nullable(), // combined IBIT+FBTC+ARKB+GBTC daily $ vol
+	etf_volume_ratio: z.number().nullable(), // vs 20d average
+	etf_flow_score: z.number(), // 0-100 pillar score
+
+	// Composite
+	composite_score: z.number(), // 0-100 weighted composite
+	equity_score_modifier: z.number(), // +5 bullish, -10 sharp drop, 0 neutral
 	stale: z.boolean(),
+	stale_sources: z.array(z.string()).default([]),
 });
 
 export type BtcSignalMetadata = z.infer<typeof btcSignalMetadataSchema>;
