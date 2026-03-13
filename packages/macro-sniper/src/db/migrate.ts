@@ -209,11 +209,17 @@ export function runMigrationsOnDb(db: Db): void {
 			predicted_btc TEXT,
 			predicted_yield TEXT,
 			predicted_usd TEXT,
+			predicted_liquidity TEXT,
+			predicted_credit TEXT,
+			bias_confidence TEXT,
+			btc_composite REAL,
+			sentiment_composite REAL,
 			spy_price REAL,
 			qqq_price REAL,
 			iwm_price REAL,
 			btc_price REAL,
 			dxy_price REAL,
+			uup_price REAL,
 			signals_snapshot TEXT,
 			created_at TEXT NOT NULL
 		)
@@ -226,6 +232,7 @@ export function runMigrationsOnDb(db: Db): void {
 		CREATE TABLE IF NOT EXISTS ${predictionResults} (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			snapshot_id INTEGER NOT NULL,
+			horizon TEXT NOT NULL DEFAULT 'T5',
 			check_date TEXT NOT NULL,
 			spy_return REAL,
 			qqq_return REAL,
@@ -236,6 +243,10 @@ export function runMigrationsOnDb(db: Db): void {
 			btc_correct INTEGER,
 			yield_rotation_correct INTEGER,
 			usd_correct INTEGER,
+			liquidity_correct INTEGER,
+			credit_correct INTEGER,
+			sentiment_correct INTEGER,
+			dead_zone_count INTEGER DEFAULT 0,
 			overall_accuracy REAL,
 			optimization_hints TEXT,
 			created_at TEXT NOT NULL
@@ -243,6 +254,9 @@ export function runMigrationsOnDb(db: Db): void {
 	`);
 
 	db.run(sql`CREATE INDEX IF NOT EXISTS idx_pred_results_snapshot ON prediction_results(snapshot_id)`);
+	db.run(
+		sql`CREATE UNIQUE INDEX IF NOT EXISTS uq_pred_results_snap_horizon ON prediction_results(snapshot_id, horizon)`,
+	);
 
 	// ─── Risk events ──────────────────────────────
 
@@ -282,6 +296,40 @@ export function runMigrationsOnDb(db: Db): void {
 		db.run(sql`ALTER TABLE positions ADD COLUMN high_water_mark REAL`);
 	} catch {
 		// Column already exists — safe to ignore
+	}
+
+	// ─── Prediction tracking v2 columns ──────────
+
+	const addCol = (table: string, col: string, type: string) => {
+		try {
+			db.run(sql.raw(`ALTER TABLE ${table} ADD COLUMN ${col} ${type}`));
+		} catch {
+			// already exists
+		}
+	};
+
+	// prediction_snapshots new columns
+	addCol("prediction_snapshots", "predicted_liquidity", "TEXT");
+	addCol("prediction_snapshots", "predicted_credit", "TEXT");
+	addCol("prediction_snapshots", "bias_confidence", "TEXT");
+	addCol("prediction_snapshots", "btc_composite", "REAL");
+	addCol("prediction_snapshots", "sentiment_composite", "REAL");
+	addCol("prediction_snapshots", "uup_price", "REAL");
+
+	// prediction_results new columns
+	addCol("prediction_results", "horizon", "TEXT DEFAULT 'T5'");
+	addCol("prediction_results", "liquidity_correct", "INTEGER");
+	addCol("prediction_results", "credit_correct", "INTEGER");
+	addCol("prediction_results", "sentiment_correct", "INTEGER");
+	addCol("prediction_results", "dead_zone_count", "INTEGER DEFAULT 0");
+
+	// Unique index for dedup (snapshot_id + horizon)
+	try {
+		db.run(
+			sql`CREATE UNIQUE INDEX IF NOT EXISTS uq_pred_results_snap_horizon ON prediction_results(snapshot_id, horizon)`,
+		);
+	} catch {
+		// may fail if duplicates already exist — clean up first
 	}
 }
 

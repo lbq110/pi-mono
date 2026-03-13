@@ -159,11 +159,17 @@ export const predictionSnapshots = sqliteTable("prediction_snapshots", {
 	predictedBtc: text("predicted_btc"), // btc_signal
 	predictedYield: text("predicted_yield"), // yield_curve signal
 	predictedUsd: text("predicted_usd"), // usd_model signal
+	predictedLiquidity: text("predicted_liquidity"), // liquidity_signal
+	predictedCredit: text("predicted_credit"), // credit_risk signal
+	biasConfidence: text("bias_confidence"), // high/medium/low
+	btcComposite: real("btc_composite"), // btc_signal composite 0-100
+	sentimentComposite: real("sentiment_composite"), // sentiment composite 0-100
 	spyPrice: real("spy_price"),
 	qqqPrice: real("qqq_price"),
 	iwmPrice: real("iwm_price"),
 	btcPrice: real("btc_price"),
 	dxyPrice: real("dxy_price"),
+	uupPrice: real("uup_price"),
 	signalsSnapshot: text("signals_snapshot", { mode: "json" }), // full analysis_results snapshot
 	createdAt: text("created_at").notNull(),
 });
@@ -171,16 +177,21 @@ export const predictionSnapshots = sqliteTable("prediction_snapshots", {
 export const predictionResults = sqliteTable("prediction_results", {
 	id: integer("id").primaryKey({ autoIncrement: true }),
 	snapshotId: integer("snapshot_id").notNull(),
-	checkDate: text("check_date").notNull(), // T+5 date
-	spyReturn: real("spy_return"), // 5-day return %
+	horizon: text("horizon").notNull(), // "T1" | "T5" | "T10"
+	checkDate: text("check_date").notNull(), // evaluation target date
+	spyReturn: real("spy_return"), // return %
 	qqqReturn: real("qqq_return"),
 	iwmReturn: real("iwm_return"),
 	btcReturn: real("btc_return"),
 	dxyReturn: real("dxy_return"),
-	biasCorrect: integer("bias_correct"), // 1/0
+	biasCorrect: integer("bias_correct"), // 1/0/null
 	btcCorrect: integer("btc_correct"),
-	yieldRotationCorrect: integer("yield_rotation_correct"), // IWM vs QQQ direction
+	yieldRotationCorrect: integer("yield_rotation_correct"),
 	usdCorrect: integer("usd_correct"),
+	liquidityCorrect: integer("liquidity_correct"), // expanding → SPY up
+	creditCorrect: integer("credit_correct"), // risk_off → SPY down
+	sentimentCorrect: integer("sentiment_correct"), // composite direction
+	deadZoneCount: integer("dead_zone_count"), // how many dimensions skipped (return < 0.5%)
 	overallAccuracy: real("overall_accuracy"), // 0.0–1.0
 	optimizationHints: text("optimization_hints", { mode: "json" }),
 	createdAt: text("created_at").notNull(),
