@@ -67,11 +67,11 @@ export const SENTIMENT_EXTREME_GREED = 80;
 /** BTC signal pillar weights (4 pillars, sum = 1.0) */
 export const BTC_SIGNAL_WEIGHTS = {
 	/** Price technicals: MA7d, volume, momentum */
-	technicals: 0.3,
+	technicals: 0.35,
 	/** Derivatives: funding rate, long/short, OI change, taker ratio */
-	derivatives: 0.35,
-	/** On-chain: MVRV, exchange netflow, active addresses */
-	onchain: 0.25,
+	derivatives: 0.4,
+	/** On-chain: MVRV, exchange netflow, active addresses (T-1 lag) */
+	onchain: 0.15,
 	/** ETF volume-price divergence (lagging data, low weight) */
 	etfFlow: 0.1,
 };

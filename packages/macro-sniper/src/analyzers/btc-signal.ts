@@ -386,9 +386,9 @@ function computeEtfFlow(db: Db, btcChange24h: number): EtfFlowResult {
 
 /**
  * Analyze BTC signal using 4-pillar model:
- *   1. Price technicals (30%): MA7d, volume, momentum
- *   2. Derivatives (35%): funding rate, long/short, OI change, taker ratio
- *   3. On-chain (25%): MVRV, exchange netflow, active addresses
+ *   1. Price technicals (35%): MA7d, volume, momentum
+ *   2. Derivatives (40%): funding rate, long/short, OI change, taker ratio
+ *   3. On-chain (15%): MVRV, exchange netflow, active addresses
  *   4. ETF volume-price divergence (10%): forward-looking divergence signal
  *
  * ETF volume is already priced in — the signal comes from volume-price
