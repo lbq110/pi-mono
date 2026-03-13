@@ -2,6 +2,7 @@
 
 import { Command } from "commander";
 import { desc, eq } from "drizzle-orm";
+import { analyzeAuctionHealth } from "./analyzers/auction-health.js";
 import { analyzeBtcSignal } from "./analyzers/btc-signal.js";
 import { computeCorrelationMatrix } from "./analyzers/correlation.js";
 import { analyzeLiquiditySignal } from "./analyzers/liquidity-signal.js";
@@ -199,6 +200,67 @@ analyze
 		const db = initDb();
 		const today = new Date().toISOString().split("T")[0];
 		analyzeUsdModel(db, today);
+		closeDb();
+	});
+
+analyze
+	.command("auction")
+	.description("Analyze Treasury auction health")
+	.action(() => {
+		const db = initDb();
+		const today = new Date().toISOString().split("T")[0];
+		analyzeAuctionHealth(db, today);
+
+		const row = db
+			.select()
+			.from(analysisResults)
+			.where(eq(analysisResults.type, "auction_health"))
+			.orderBy(desc(analysisResults.date))
+			.limit(1)
+			.all()[0];
+
+		if (row) {
+			const meta = (typeof row.metadata === "string" ? JSON.parse(row.metadata) : row.metadata) as {
+				auctions: {
+					term: string;
+					auctionDate: string;
+					healthScore: number;
+					bidToCover: number | null;
+					indirectPct: number | null;
+					dealerPct: number | null;
+					tailBps: number | null;
+					highYield: number | null;
+				}[];
+				aggregate_health: number;
+				short_end_health: number;
+				long_end_health: number;
+				term_premium_signal: number;
+				avg_tail_bps: number | null;
+			};
+
+			console.log(`\nSignal: ${row.signal.toUpperCase()}`);
+			console.log(`Aggregate Health: ${meta.aggregate_health.toFixed(1)}/100`);
+			console.log(`Short End: ${meta.short_end_health.toFixed(1)}  Long End: ${meta.long_end_health.toFixed(1)}`);
+			console.log(
+				`Term Premium Signal: ${meta.term_premium_signal > 0 ? "+" : ""}${meta.term_premium_signal.toFixed(1)} (positive = long end weaker)`,
+			);
+			console.log(`Avg Tail: ${meta.avg_tail_bps !== null ? `${meta.avg_tail_bps.toFixed(1)} bps` : "n/a"}`);
+
+			console.log("\n── Per-Term Detail ──\n");
+			console.log("  Term          Date        Health  B/C   Indirect  Dealer   Yield    Tail");
+			console.log(`  ${"─".repeat(78)}`);
+			for (const a of meta.auctions) {
+				const health = a.healthScore.toFixed(0).padStart(4);
+				const btc = a.bidToCover?.toFixed(2) ?? "n/a";
+				const ind = a.indirectPct !== null ? `${a.indirectPct.toFixed(1)}%` : "n/a";
+				const dlr = a.dealerPct !== null ? `${a.dealerPct.toFixed(1)}%` : "n/a";
+				const yld = a.highYield !== null ? `${a.highYield.toFixed(3)}%` : "n/a";
+				const tail = a.tailBps !== null ? `${a.tailBps >= 0 ? "+" : ""}${a.tailBps.toFixed(1)}bp` : "n/a";
+				console.log(
+					`  ${a.term.padEnd(14)} ${a.auctionDate}  ${health}    ${btc.padStart(5)}  ${ind.padStart(8)}  ${dlr.padStart(6)}  ${yld.padStart(7)}  ${tail.padStart(7)}`,
+				);
+			}
+		}
 		closeDb();
 	});
 

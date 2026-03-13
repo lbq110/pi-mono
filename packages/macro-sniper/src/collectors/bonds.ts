@@ -6,7 +6,7 @@ import { fetchYahooQuote } from "./yahoo.js";
 
 const log = createChildLogger("collector");
 
-const YIELD_SERIES = ["DGS2", "DGS10", "DGS20", "DGS30", "T10Y2Y"] as const;
+const YIELD_SERIES = ["DGS2", "DGS3", "DGS5", "DGS7", "DGS10", "DGS20", "DGS30", "T10Y2Y"] as const;
 const CREDIT_SYMBOLS = ["HYG", "LQD", "IEF"] as const;
 
 /**

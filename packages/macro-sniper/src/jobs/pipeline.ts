@@ -1,3 +1,4 @@
+import { analyzeAuctionHealth } from "../analyzers/auction-health.js";
 import { analyzeBtcSignal } from "../analyzers/btc-signal.js";
 import { computeCorrelationMatrix } from "../analyzers/correlation.js";
 import { analyzeCreditRisk } from "../analyzers/credit-risk.js";
@@ -28,6 +29,7 @@ export function runAnalysisPipeline(db: Db, date: string): void {
 	analyzeUsdModel(db, date);
 	analyzeBtcSignal(db, date);
 	computeCorrelationMatrix(db, date);
+	analyzeAuctionHealth(db, date);
 	computeMarketBias(db, date);
 
 	log.info({ date }, "Analysis pipeline complete");

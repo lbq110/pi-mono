@@ -218,7 +218,33 @@ export type AnalysisType =
 	| "usd_model"
 	| "market_bias"
 	| "btc_signal"
-	| "correlation_matrix";
+	| "correlation_matrix"
+	| "auction_health";
+
+const auctionHealthMetadataSchema = z.object({
+	auctions: z.array(
+		z.object({
+			term: z.string(),
+			auctionDate: z.string(),
+			healthScore: z.number(),
+			bidToCover: z.number().nullable(),
+			bidToCoverDelta: z.number().nullable(),
+			indirectPct: z.number().nullable(),
+			dealerPct: z.number().nullable(),
+			tailBps: z.number().nullable(),
+			wiProxy: z.number().nullable(),
+			highYield: z.number().nullable(),
+		}),
+	),
+	aggregate_health: z.number(),
+	short_end_health: z.number(),
+	long_end_health: z.number(),
+	term_premium_signal: z.number(),
+	avg_tail_bps: z.number().nullable(),
+	stale: z.boolean(),
+});
+
+export type AuctionHealthMetadata = z.infer<typeof auctionHealthMetadataSchema>;
 
 export const analysisMetadataSchemas: Record<AnalysisType, z.ZodType> = {
 	liquidity_signal: liquiditySignalMetadataSchema,
@@ -229,6 +255,7 @@ export const analysisMetadataSchemas: Record<AnalysisType, z.ZodType> = {
 	market_bias: marketBiasMetadataSchema,
 	btc_signal: btcSignalMetadataSchema,
 	correlation_matrix: correlationMatrixMetadataSchema,
+	auction_health: auctionHealthMetadataSchema,
 };
 
 /** Validate metadata for a given analysis type. Throws on invalid data. */

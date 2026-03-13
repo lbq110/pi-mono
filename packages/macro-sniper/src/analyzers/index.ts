@@ -1,3 +1,4 @@
+export { analyzeAuctionHealth } from "./auction-health.js";
 export { analyzeBtcSignal } from "./btc-signal.js";
 export { computeCorrelationMatrix, getCorrelationMatrix } from "./correlation.js";
 export { analyzeCreditRisk } from "./credit-risk.js";
