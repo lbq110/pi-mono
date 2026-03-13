@@ -172,10 +172,13 @@ export function startScheduler(streamText: (prompt: string, model: string) => Pr
 		),
 	);
 
-	// ─── Liquidity: Thu 17:00 ET (WALCL updates ~16:30 ET on Thursdays) ──
+	// ─── Liquidity: daily 17:00 ET Mon-Fri ───────
+	// TGA (WTREGEN) and RRP (RRPONTSYD) update daily ~15:30-16:00 ET
+	// WALCL updates weekly on Thursday ~16:30 ET
+	// Net liquidity = WALCL - TGA - RRP changes daily via TGA/RRP
 	scheduledTasks.push(
 		cron.schedule(
-			"0 17 * * 4",
+			"0 17 * * 1-5",
 			() => {
 				const config = loadConfig();
 				const db = getDb();
