@@ -13,9 +13,12 @@ import {
 	collectLiquidity,
 	collectMacroEvents,
 	collectSentiment,
+	collectTreasuryAuctions,
 	collectUsdModelData,
 	collectYields,
+	getAuctionHistory,
 	getLatestMacroEvent,
+	getUpcomingAuctions,
 	getUpcomingEvents,
 	MACRO_SERIES,
 } from "./collectors/index.js";
@@ -139,6 +142,15 @@ collect
 	});
 
 collect
+	.command("auction")
+	.description("Collect US Treasury auction results (Notes/Bonds)")
+	.action(async () => {
+		const db = initDb();
+		await collectTreasuryAuctions(db);
+		closeDb();
+	});
+
+collect
 	.command("all")
 	.description("Collect all data sources")
 	.action(async () => {
@@ -152,6 +164,7 @@ collect
 		await collectHourlyPrices(db);
 		await collectMacroEvents(db, config.FRED_API_KEY);
 		await collectEconomicCalendar(db, config.FRED_API_KEY);
+		await collectTreasuryAuctions(db);
 		closeDb();
 	});
 
@@ -423,6 +436,52 @@ program
 					.map((e) => e.eventType)
 					.join(", ");
 				console.log(`  ${ev.releaseDate} ${ev.releaseTime ?? "??:??"} ET  ${impact} ${ev.releaseName} [${types}]`);
+			}
+		}
+		console.log("");
+
+		closeDb();
+	});
+
+// ─── auction command ─────────────────────────────
+
+program
+	.command("auction")
+	.description("Display Treasury auction results and upcoming auctions")
+	.action(() => {
+		const db = initDb();
+
+		const terms = ["2-Year", "3-Year", "5-Year", "7-Year", "10-Year", "20-Year", "30-Year"];
+
+		console.log("\n══ Latest Treasury Auction Results ══\n");
+		console.log("  Term          Date        Yield   Bid/Cover  Indirect  Direct   Dealer   Offering");
+		console.log("  " + "─".repeat(85));
+
+		for (const term of terms) {
+			const history = getAuctionHistory(db, term, 2);
+			for (const a of history) {
+				const yld = a.highYield !== null ? `${a.highYield.toFixed(3)}%` : "pending";
+				const btc = a.bidToCoverRatio !== null ? a.bidToCoverRatio.toFixed(2) : "n/a";
+				const ind = a.indirectPct !== null ? `${a.indirectPct.toFixed(1)}%` : "n/a";
+				const dir = a.directPct !== null ? `${a.directPct.toFixed(1)}%` : "n/a";
+				const dlr = a.primaryDealerPct !== null ? `${a.primaryDealerPct.toFixed(1)}%` : "n/a";
+				const off = `$${(a.offeringAmt / 1e9).toFixed(0)}B`;
+				console.log(
+					`  ${a.securityTerm.padEnd(14)} ${a.auctionDate}  ${yld.padStart(7)}  ${btc.padStart(9)}  ${ind.padStart(8)}  ${dir.padStart(6)}  ${dlr.padStart(6)}   ${off}`,
+				);
+			}
+		}
+
+		console.log("\n══ Upcoming Auctions ══\n");
+		const upcoming = getUpcomingAuctions(db);
+		if (upcoming.length === 0) {
+			console.log("  No upcoming auctions");
+		} else {
+			for (const a of upcoming) {
+				const off = `$${(a.offeringAmt / 1e9).toFixed(0)}B`;
+				console.log(
+					`  ${a.auctionDate} ${a.closingTime ?? "13:00"} ET  ${a.securityTerm} ${a.securityType}  ${off}`,
+				);
 			}
 		}
 		console.log("");

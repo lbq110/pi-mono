@@ -19,6 +19,7 @@ import {
 	riskState,
 	sentimentSnapshots,
 	tradeLog,
+	treasuryAuctions,
 	yieldSnapshots,
 } from "./schema.js";
 
@@ -259,6 +260,33 @@ export function runMigrationsOnDb(db: Db): void {
 	db.run(
 		sql`CREATE UNIQUE INDEX IF NOT EXISTS uq_pred_results_snap_horizon ON prediction_results(snapshot_id, horizon)`,
 	);
+
+	// ─── Treasury Auctions ───────────────────────
+
+	db.run(sql`
+		CREATE TABLE IF NOT EXISTS ${treasuryAuctions} (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			auction_date TEXT NOT NULL,
+			security_type TEXT NOT NULL,
+			security_term TEXT NOT NULL,
+			cusip TEXT NOT NULL,
+			high_yield REAL,
+			bid_to_cover_ratio REAL,
+			offering_amt REAL NOT NULL,
+			indirect_accepted REAL,
+			indirect_pct REAL,
+			direct_accepted REAL,
+			direct_pct REAL,
+			primary_dealer_accepted REAL,
+			primary_dealer_pct REAL,
+			closing_time TEXT,
+			status TEXT NOT NULL,
+			fetched_at TEXT NOT NULL
+		)
+	`);
+
+	db.run(sql`CREATE UNIQUE INDEX IF NOT EXISTS uq_auction_cusip_date ON treasury_auctions(cusip, auction_date)`);
+	db.run(sql`CREATE INDEX IF NOT EXISTS idx_auction_date_term ON treasury_auctions(auction_date, security_term)`);
 
 	// ─── Macro Events + Calendar ─────────────────
 

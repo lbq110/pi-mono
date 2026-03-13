@@ -6,6 +6,7 @@ import {
 	collectLiquidity,
 	collectMacroEvents,
 	collectSentiment,
+	collectTreasuryAuctions,
 	collectUsdModelData,
 	collectYields,
 	hasTodayHighImpactEvent,
@@ -49,6 +50,7 @@ export async function runFullPipeline(streamText: (prompt: string, model: string
 		await collectHourlyPrices(db);
 		await collectMacroEvents(db, config.FRED_API_KEY);
 		await collectEconomicCalendar(db, config.FRED_API_KEY);
+		await collectTreasuryAuctions(db);
 		finishJobRun(db, collectRunId, "success");
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
@@ -247,6 +249,24 @@ export function startScheduler(streamText: (prompt: string, model: string) => Pr
 						log.error({ error: err instanceof Error ? err.message : String(err) }, "FOMC collection failed"),
 					);
 				}
+			},
+			{ timezone },
+		),
+	);
+
+	// ─── Treasury auctions: 13:15 ET Mon-Fri ─────
+	// Note/Bond auctions close at 13:00 ET, results ~13:05
+	scheduledTasks.push(
+		cron.schedule(
+			"15 13 * * 1-5",
+			() => {
+				const db = getDb();
+				collectTreasuryAuctions(db).catch((err) =>
+					log.error(
+						{ error: err instanceof Error ? err.message : String(err) },
+						"Treasury auction collection failed",
+					),
+				);
 			},
 			{ timezone },
 		),

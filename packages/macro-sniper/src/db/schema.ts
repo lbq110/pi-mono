@@ -198,6 +198,28 @@ export const predictionResults = sqliteTable("prediction_results", {
 	createdAt: text("created_at").notNull(),
 });
 
+// ─── Treasury Auctions ──────────────────────────
+
+export const treasuryAuctions = sqliteTable("treasury_auctions", {
+	id: integer("id").primaryKey({ autoIncrement: true }),
+	auctionDate: text("auction_date").notNull(),
+	securityType: text("security_type").notNull(), // "Note" | "Bond"
+	securityTerm: text("security_term").notNull(), // "10-Year", "2-Year", etc.
+	cusip: text("cusip").notNull(),
+	highYield: real("high_yield"), // 中标利率 (stop-out rate), null if upcoming
+	bidToCoverRatio: real("bid_to_cover_ratio"), // 投标倍数
+	offeringAmt: real("offering_amt").notNull(), // 发行额 USD
+	indirectAccepted: real("indirect_accepted"), // 间接投标者中标额 (外国央行等)
+	indirectPct: real("indirect_pct"), // 间接投标者占比 %
+	directAccepted: real("direct_accepted"), // 直接投标者中标额
+	directPct: real("direct_pct"), // 直接投标者占比 %
+	primaryDealerAccepted: real("primary_dealer_accepted"), // 一级交易商中标额
+	primaryDealerPct: real("primary_dealer_pct"), // 一级交易商占比 %
+	closingTime: text("closing_time"), // "01:00 PM" etc.
+	status: text("status").notNull(), // "completed" | "upcoming"
+	fetchedAt: text("fetched_at").notNull(),
+});
+
 // ─── Macro Events (high-impact economic data) ────
 
 export const macroEvents = sqliteTable("macro_events", {

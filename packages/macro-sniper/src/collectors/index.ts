@@ -25,5 +25,11 @@ export {
 	MACRO_SERIES,
 } from "./macro-events.js";
 export { collectSentiment } from "./sentiment.js";
+export {
+	collectTreasuryAuctions,
+	getAuctionHistory,
+	getLatestAuction,
+	getUpcomingAuctions,
+} from "./treasury-auctions.js";
 export { collectUsdModelData } from "./usd-model.js";
 export { fetchYahooHistory, fetchYahooHourlyKlines, fetchYahooQuote } from "./yahoo.js";
