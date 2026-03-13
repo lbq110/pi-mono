@@ -198,6 +198,20 @@ export const predictionResults = sqliteTable("prediction_results", {
 	createdAt: text("created_at").notNull(),
 });
 
+// ─── SRF (Standing Repo Facility) Usage ─────────
+
+export const srfUsage = sqliteTable("srf_usage", {
+	id: integer("id").primaryKey({ autoIncrement: true }),
+	operationDate: text("operation_date").notNull(),
+	totalSubmitted: real("total_submitted").notNull(), // USD
+	totalAccepted: real("total_accepted").notNull(), // USD
+	treasuryAccepted: real("treasury_accepted").notNull().default(0),
+	agencyAccepted: real("agency_accepted").notNull().default(0),
+	mbsAccepted: real("mbs_accepted").notNull().default(0),
+	minBidRate: real("min_bid_rate"), // SRF offering rate (= IORB)
+	fetchedAt: text("fetched_at").notNull(),
+});
+
 // ─── Treasury Auctions ──────────────────────────
 
 export const treasuryAuctions = sqliteTable("treasury_auctions", {

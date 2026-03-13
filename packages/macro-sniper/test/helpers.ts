@@ -174,6 +174,94 @@ export function seedSentimentExtremeFear(db: Db): void {
 	}
 }
 
+/** Seed Treasury auction data for auction_health analyzer. */
+export function seedAuctions(db: Db): void {
+	const auctions = [
+		{
+			date: "2025-02-24",
+			type: "Note",
+			term: "2-Year",
+			cusip: "T2Y0224",
+			yield: 4.25,
+			btc: 2.6,
+			indirect: 56,
+			direct: 34,
+			dealer: 10,
+			offering: 69e9,
+		},
+		{
+			date: "2025-02-25",
+			type: "Note",
+			term: "5-Year",
+			cusip: "T5Y0225",
+			yield: 4.15,
+			btc: 2.4,
+			indirect: 63,
+			direct: 25,
+			dealer: 12,
+			offering: 70e9,
+		},
+		{
+			date: "2025-02-26",
+			type: "Note",
+			term: "7-Year",
+			cusip: "T7Y0226",
+			yield: 4.35,
+			btc: 2.5,
+			indirect: 64,
+			direct: 26,
+			dealer: 10,
+			offering: 44e9,
+		},
+		{
+			date: "2025-03-03",
+			type: "Note",
+			term: "10-Year",
+			cusip: "T10Y0303",
+			yield: 4.52,
+			btc: 2.45,
+			indirect: 72,
+			direct: 14,
+			dealer: 14,
+			offering: 42e9,
+		},
+		{
+			date: "2025-03-04",
+			type: "Bond",
+			term: "30-Year",
+			cusip: "T30Y0304",
+			yield: 4.87,
+			btc: 2.45,
+			indirect: 63,
+			direct: 28,
+			dealer: 9,
+			offering: 22e9,
+		},
+	];
+	for (const a of auctions) {
+		db.insert(schema.treasuryAuctions)
+			.values({
+				auctionDate: a.date,
+				securityType: a.type,
+				securityTerm: a.term,
+				cusip: a.cusip,
+				highYield: a.yield,
+				bidToCoverRatio: a.btc,
+				offeringAmt: a.offering,
+				indirectAccepted: (a.indirect / 100) * a.offering,
+				indirectPct: a.indirect,
+				directAccepted: (a.direct / 100) * a.offering,
+				directPct: a.direct,
+				primaryDealerAccepted: (a.dealer / 100) * a.offering,
+				primaryDealerPct: a.dealer,
+				closingTime: "01:00 PM",
+				status: "completed",
+				fetchedAt: FETCHED,
+			})
+			.run();
+	}
+}
+
 /**
  * Seed 8 days of hourly BTCUSD candles so btc-signal analyzer has enough data for MA7d.
  * Also seeds SPY/QQQ/IWM/DXY for correlation matrix.

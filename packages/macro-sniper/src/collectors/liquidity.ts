@@ -5,7 +5,7 @@ import { fetchFredSeries } from "./fred.js";
 
 const log = createChildLogger("collector");
 
-const LIQUIDITY_SERIES = ["WALCL", "WTREGEN", "RRPONTSYD", "SOFR", "IORB", "FEDFUNDS"] as const;
+const LIQUIDITY_SERIES = ["WALCL", "WTREGEN", "RRPONTSYD", "SOFR", "IORB", "FEDFUNDS", "SOFR99"] as const;
 
 /**
  * Collect liquidity data from FRED API and write raw snapshots to DB.

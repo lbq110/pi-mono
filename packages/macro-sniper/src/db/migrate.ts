@@ -18,6 +18,7 @@ import {
 	riskEvents,
 	riskState,
 	sentimentSnapshots,
+	srfUsage,
 	tradeLog,
 	treasuryAuctions,
 	yieldSnapshots,
@@ -260,6 +261,24 @@ export function runMigrationsOnDb(db: Db): void {
 	db.run(
 		sql`CREATE UNIQUE INDEX IF NOT EXISTS uq_pred_results_snap_horizon ON prediction_results(snapshot_id, horizon)`,
 	);
+
+	// ─── SRF Usage ───────────────────────────────
+
+	db.run(sql`
+		CREATE TABLE IF NOT EXISTS ${srfUsage} (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			operation_date TEXT NOT NULL,
+			total_submitted REAL NOT NULL,
+			total_accepted REAL NOT NULL,
+			treasury_accepted REAL NOT NULL DEFAULT 0,
+			agency_accepted REAL NOT NULL DEFAULT 0,
+			mbs_accepted REAL NOT NULL DEFAULT 0,
+			min_bid_rate REAL,
+			fetched_at TEXT NOT NULL
+		)
+	`);
+
+	db.run(sql`CREATE UNIQUE INDEX IF NOT EXISTS uq_srf_date ON srf_usage(operation_date)`);
 
 	// ─── Treasury Auctions ───────────────────────
 

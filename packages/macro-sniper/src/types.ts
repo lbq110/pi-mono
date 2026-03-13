@@ -219,7 +219,8 @@ export type AnalysisType =
 	| "market_bias"
 	| "btc_signal"
 	| "correlation_matrix"
-	| "auction_health";
+	| "auction_health"
+	| "funding_stress";
 
 const auctionHealthMetadataSchema = z.object({
 	auctions: z.array(
@@ -246,6 +247,26 @@ const auctionHealthMetadataSchema = z.object({
 
 export type AuctionHealthMetadata = z.infer<typeof auctionHealthMetadataSchema>;
 
+const fundingStressMetadataSchema = z.object({
+	stress_score: z.number(), // 0-100
+	pillar_srf: z.number(), // SRF usage score 0-100
+	pillar_sofr_iorb: z.number(), // SOFR-IORB spread score 0-100
+	pillar_sofr_tail: z.number(), // SOFR 99th pct tail score 0-100
+	srf_accepted_bn: z.number(), // latest SRF take-up ($B)
+	srf_5d_avg_bn: z.number(), // 5-day rolling average ($B)
+	srf_consecutive_days: z.number(), // consecutive days with usage > $100M
+	srf_date: z.string().nullable(), // latest SRF operation date
+	sofr: z.number(),
+	iorb: z.number(),
+	sofr_iorb_spread_bps: z.number(), // SOFR − IORB in bps (positive = stress)
+	sofr99: z.number().nullable(), // SOFR 99th percentile
+	sofr99_iorb_bps: z.number(), // SOFR99 − IORB in bps (tail risk)
+	sofr_5d_trend_bps: z.number(), // SOFR 5d change in bps (rising = stress building)
+	stale: z.boolean(),
+});
+
+export type FundingStressMetadata = z.infer<typeof fundingStressMetadataSchema>;
+
 export const analysisMetadataSchemas: Record<AnalysisType, z.ZodType> = {
 	liquidity_signal: liquiditySignalMetadataSchema,
 	yield_curve: yieldCurveSignalMetadataSchema,
@@ -256,6 +277,7 @@ export const analysisMetadataSchemas: Record<AnalysisType, z.ZodType> = {
 	btc_signal: btcSignalMetadataSchema,
 	correlation_matrix: correlationMatrixMetadataSchema,
 	auction_health: auctionHealthMetadataSchema,
+	funding_stress: fundingStressMetadataSchema,
 };
 
 /** Validate metadata for a given analysis type. Throws on invalid data. */

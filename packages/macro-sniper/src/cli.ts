@@ -5,6 +5,7 @@ import { desc, eq } from "drizzle-orm";
 import { analyzeAuctionHealth } from "./analyzers/auction-health.js";
 import { analyzeBtcSignal } from "./analyzers/btc-signal.js";
 import { computeCorrelationMatrix } from "./analyzers/correlation.js";
+import { analyzeFundingStress } from "./analyzers/funding-stress.js";
 import { analyzeLiquiditySignal } from "./analyzers/liquidity-signal.js";
 import { analyzeUsdModel } from "./analyzers/usd-model.js";
 import {
@@ -14,11 +15,13 @@ import {
 	collectLiquidity,
 	collectMacroEvents,
 	collectSentiment,
+	collectSrfUsage,
 	collectTreasuryAuctions,
 	collectUsdModelData,
 	collectYields,
 	getAuctionHistory,
 	getLatestMacroEvent,
+	getSrfHistory,
 	getUpcomingAuctions,
 	getUpcomingEvents,
 	MACRO_SERIES,
@@ -143,6 +146,15 @@ collect
 	});
 
 collect
+	.command("srf")
+	.description("Collect Fed Standing Repo Facility (SRF) daily usage from NY Fed")
+	.action(async () => {
+		const db = initDb();
+		await collectSrfUsage(db);
+		closeDb();
+	});
+
+collect
 	.command("auction")
 	.description("Collect US Treasury auction results (Notes/Bonds)")
 	.action(async () => {
@@ -166,6 +178,7 @@ collect
 		await collectMacroEvents(db, config.FRED_API_KEY);
 		await collectEconomicCalendar(db, config.FRED_API_KEY);
 		await collectTreasuryAuctions(db);
+		await collectSrfUsage(db);
 		closeDb();
 	});
 
@@ -271,6 +284,64 @@ analyze
 		const db = initDb();
 		const today = new Date().toISOString().split("T")[0];
 		analyzeBtcSignal(db, today);
+		closeDb();
+	});
+
+analyze
+	.command("funding")
+	.description("Analyze funding stress (SRF + SOFR-IORB + SOFR tail)")
+	.action(() => {
+		const db = initDb();
+		const today = new Date().toISOString().split("T")[0];
+		analyzeFundingStress(db, today);
+
+		const row = db
+			.select()
+			.from(analysisResults)
+			.where(eq(analysisResults.type, "funding_stress"))
+			.orderBy(desc(analysisResults.date))
+			.limit(1)
+			.all()[0];
+
+		if (row) {
+			const meta = (typeof row.metadata === "string" ? JSON.parse(row.metadata) : row.metadata) as {
+				stress_score: number;
+				pillar_srf: number;
+				pillar_sofr_iorb: number;
+				pillar_sofr_tail: number;
+				srf_accepted_bn: number;
+				srf_5d_avg_bn: number;
+				srf_consecutive_days: number;
+				srf_date: string | null;
+				sofr: number;
+				iorb: number;
+				sofr_iorb_spread_bps: number;
+				sofr99: number | null;
+				sofr99_iorb_bps: number;
+				sofr_5d_trend_bps: number;
+			};
+
+			console.log(`\nSignal: ${row.signal.toUpperCase()}`);
+			console.log(`Stress Score: ${meta.stress_score.toFixed(1)}/100`);
+			console.log("\n── Pillar Scores ──\n");
+			console.log(`  SRF Usage:      ${meta.pillar_srf.toFixed(1)}/100`);
+			console.log(`  SOFR−IORB:      ${meta.pillar_sofr_iorb.toFixed(1)}/100`);
+			console.log(`  SOFR Tail:      ${meta.pillar_sofr_tail.toFixed(1)}/100`);
+			console.log("\n── Raw Data ──\n");
+			console.log(`  SRF Take-up:    $${meta.srf_accepted_bn.toFixed(2)}B (date: ${meta.srf_date ?? "n/a"})`);
+			console.log(`  SRF 5d Avg:     $${meta.srf_5d_avg_bn.toFixed(2)}B`);
+			console.log(`  SRF Consec Days: ${meta.srf_consecutive_days}`);
+			console.log(`  SOFR:           ${meta.sofr.toFixed(2)}%`);
+			console.log(`  IORB:           ${meta.iorb.toFixed(2)}%`);
+			console.log(
+				`  SOFR−IORB:      ${meta.sofr_iorb_spread_bps >= 0 ? "+" : ""}${meta.sofr_iorb_spread_bps.toFixed(1)} bps`,
+			);
+			console.log(`  SOFR 99th:      ${meta.sofr99?.toFixed(2) ?? "n/a"}%`);
+			console.log(`  SOFR99−IORB:    +${meta.sofr99_iorb_bps.toFixed(1)} bps`);
+			console.log(
+				`  SOFR 5d Trend:  ${meta.sofr_5d_trend_bps >= 0 ? "+" : ""}${meta.sofr_5d_trend_bps.toFixed(1)} bps`,
+			);
+		}
 		closeDb();
 	});
 
@@ -500,6 +571,44 @@ program
 				console.log(`  ${ev.releaseDate} ${ev.releaseTime ?? "??:??"} ET  ${impact} ${ev.releaseName} [${types}]`);
 			}
 		}
+		console.log("");
+
+		closeDb();
+	});
+
+// ─── srf command ─────────────────────────────────
+
+program
+	.command("srf")
+	.description("Display SRF (Standing Repo Facility) usage history")
+	.action(() => {
+		const db = initDb();
+		const history = getSrfHistory(db, 30);
+
+		if (history.length === 0) {
+			console.log("No SRF data. Run: macro-sniper collect srf");
+			closeDb();
+			return;
+		}
+
+		console.log("\n══ SRF Daily Usage (last 30d) ══\n");
+		console.log("  Date        Take-up         Bar");
+		console.log(`  ${"─".repeat(60)}`);
+
+		// Show oldest first
+		for (const row of [...history].reverse()) {
+			const bn = row.totalAccepted / 1e9;
+			const label = bn >= 0.01 ? `$${bn.toFixed(2)}B` : "$0";
+			const bar = bn > 0.01 ? "█".repeat(Math.min(40, Math.ceil(bn / 0.5))) : "";
+			console.log(`  ${row.operationDate}  ${label.padStart(12)}  ${bar}`);
+		}
+
+		// Summary
+		const total = history.reduce((s, r) => s + r.totalAccepted, 0) / 1e9;
+		const max = Math.max(...history.map((r) => r.totalAccepted)) / 1e9;
+		const nonZeroDays = history.filter((r) => r.totalAccepted > 100_000_000).length;
+		console.log(`\n  Total: $${total.toFixed(2)}B across ${history.length} days`);
+		console.log(`  Peak: $${max.toFixed(2)}B | Days with usage: ${nonZeroDays}`);
 		console.log("");
 
 		closeDb();

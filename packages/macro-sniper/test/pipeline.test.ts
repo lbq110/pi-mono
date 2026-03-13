@@ -9,6 +9,7 @@ import { runAnalysisPipeline } from "../src/jobs/pipeline.js";
 import { generateDailyReport } from "../src/reporters/pipeline.js";
 import {
 	createTestDb,
+	seedAuctions,
 	seedCredit,
 	seedHourlyPrices,
 	seedLiquidity,
@@ -88,22 +89,25 @@ describe("analyzers", () => {
 });
 
 describe("full analysis pipeline", () => {
-	it("produces all 8 analysis results including btc_signal and correlation_matrix", () => {
+	it("produces all 10 analysis results including auction_health and funding_stress", () => {
 		const db = createTestDb();
 		seedLiquidity(db);
 		seedYields(db);
 		seedCredit(db);
 		seedSentiment(db);
 		seedHourlyPrices(db);
+		seedAuctions(db);
 
 		runAnalysisPipeline(db, TODAY);
 
 		const rows = db.select().from(schema.analysisResults).all();
 		const types = rows.map((r) => r.type).sort();
 		expect(types).toEqual([
+			"auction_health",
 			"btc_signal",
 			"correlation_matrix",
 			"credit_risk",
+			"funding_stress",
 			"liquidity_signal",
 			"market_bias",
 			"sentiment_signal",

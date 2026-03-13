@@ -5,6 +5,7 @@ import { finishJobRun, getRecentJobRuns, startJobRun } from "../../src/jobs/run-
 import { generateDailyReport } from "../../src/reporters/pipeline.js";
 import {
 	createTestDb,
+	seedAuctions,
 	seedCredit,
 	seedCreditBreach,
 	seedHourlyPrices,
@@ -25,17 +26,20 @@ describe("end-to-end pipeline", () => {
 		seedCredit(db);
 		seedSentiment(db);
 		seedHourlyPrices(db);
+		seedAuctions(db);
 
 		// Step 2: Run analysis pipeline (reads raw data from DB, writes signals to DB)
 		runAnalysisPipeline(db, TODAY);
 
-		// Verify all 8 analysis results exist (Phase 1-3)
+		// Verify all 10 analysis results exist (Phase 1-3 + auction_health + funding_stress)
 		const analysisRows = db.select().from(schema.analysisResults).all();
 		const types = analysisRows.map((r) => r.type).sort();
 		expect(types).toEqual([
+			"auction_health",
 			"btc_signal",
 			"correlation_matrix",
 			"credit_risk",
+			"funding_stress",
 			"liquidity_signal",
 			"market_bias",
 			"sentiment_signal",

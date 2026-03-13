@@ -21,6 +21,20 @@ export const LIQUIDITY_CONTRACTING_THRESHOLD = -500;
 /** SOFR-IORB spread warning threshold (unit: bps) */
 export const SOFR_IORB_TIGHT_THRESHOLD = 5;
 
+// ─── A2. Funding Stress (SRF + SOFR) Thresholds ─
+
+/** SRF daily take-up elevated threshold ($ billion) */
+export const SRF_ELEVATED_THRESHOLD = 5;
+/** SRF daily take-up spike/severe threshold ($ billion) */
+export const SRF_SPIKE_THRESHOLD = 20;
+
+/** SOFR − IORB spread: above 0 = SOFR exceeds IORB, funding pressure */
+export const SOFR_IORB_POSITIVE_THRESHOLD = 0; // bps
+// SOFR_IORB_TIGHT_THRESHOLD already defined in A1 (5 bps)
+
+/** SOFR 99th percentile − IORB: tail stress (bps) */
+export const SOFR99_IORB_THRESHOLD = 8;
+
 // ─── B. Yield Curve Shape Thresholds ─────────────
 
 /** Minimum effective move for single side (unit: bps) */

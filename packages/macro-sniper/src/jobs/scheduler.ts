@@ -6,6 +6,7 @@ import {
 	collectLiquidity,
 	collectMacroEvents,
 	collectSentiment,
+	collectSrfUsage,
 	collectTreasuryAuctions,
 	collectUsdModelData,
 	collectYields,
@@ -51,6 +52,7 @@ export async function runFullPipeline(streamText: (prompt: string, model: string
 		await collectMacroEvents(db, config.FRED_API_KEY);
 		await collectEconomicCalendar(db, config.FRED_API_KEY);
 		await collectTreasuryAuctions(db);
+		await collectSrfUsage(db);
 		finishJobRun(db, collectRunId, "success");
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
@@ -174,9 +176,10 @@ export function startScheduler(streamText: (prompt: string, model: string) => Pr
 		),
 	);
 
-	// ─── Liquidity: daily 17:00 ET Mon-Fri ───────
+	// ─── Liquidity + SRF: daily 17:00 ET Mon-Fri ─
 	// TGA (WTREGEN) and RRP (RRPONTSYD) update daily ~15:30-16:00 ET
 	// WALCL updates weekly on Thursday ~16:30 ET
+	// SRF results published after 13:45 ET operation
 	// Net liquidity = WALCL - TGA - RRP changes daily via TGA/RRP
 	scheduledTasks.push(
 		cron.schedule(
@@ -186,6 +189,9 @@ export function startScheduler(streamText: (prompt: string, model: string) => Pr
 				const db = getDb();
 				collectLiquidity(db, config.FRED_API_KEY).catch((err) =>
 					log.error({ error: err instanceof Error ? err.message : String(err) }, "Liquidity collection failed"),
+				);
+				collectSrfUsage(db).catch((err) =>
+					log.error({ error: err instanceof Error ? err.message : String(err) }, "SRF collection failed"),
 				);
 			},
 			{ timezone },

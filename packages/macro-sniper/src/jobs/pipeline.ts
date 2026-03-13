@@ -2,6 +2,7 @@ import { analyzeAuctionHealth } from "../analyzers/auction-health.js";
 import { analyzeBtcSignal } from "../analyzers/btc-signal.js";
 import { computeCorrelationMatrix } from "../analyzers/correlation.js";
 import { analyzeCreditRisk } from "../analyzers/credit-risk.js";
+import { analyzeFundingStress } from "../analyzers/funding-stress.js";
 import { analyzeLiquiditySignal } from "../analyzers/liquidity-signal.js";
 import { analyzeSentimentSignal } from "../analyzers/sentiment-signal.js";
 import { analyzeUsdModel } from "../analyzers/usd-model.js";
@@ -30,6 +31,7 @@ export function runAnalysisPipeline(db: Db, date: string): void {
 	analyzeBtcSignal(db, date);
 	computeCorrelationMatrix(db, date);
 	analyzeAuctionHealth(db, date);
+	analyzeFundingStress(db, date);
 	computeMarketBias(db, date);
 
 	log.info({ date }, "Analysis pipeline complete");

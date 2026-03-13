@@ -25,6 +25,7 @@ export {
 	MACRO_SERIES,
 } from "./macro-events.js";
 export { collectSentiment } from "./sentiment.js";
+export { collectSrfUsage, getSrfHistory } from "./srf.js";
 export {
 	collectTreasuryAuctions,
 	getAuctionHistory,
