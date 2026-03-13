@@ -43,7 +43,11 @@ export const creditRiskSignalMetadataSchema = z.object({
 	lqd_ief_ma20: z.number(),
 	hyg_breach: z.boolean(),
 	lqd_breach: z.boolean(),
+	hyg_breach_pct: z.number(), // how far below MA20 (e.g. -0.025 = 2.5%)
+	lqd_breach_pct: z.number(),
 	consecutive_breach_days: z.number(),
+	both_breach: z.boolean(), // HYG AND LQD both in breach
+	credit_multiplier: z.number(), // graduated: 1.0 / 0.7 / 0.3 / 0.0
 	stale: z.boolean().default(false),
 	stale_sources: z.array(z.string()).default([]),
 });
@@ -237,7 +241,7 @@ export function validateAnalysisMetadata(type: AnalysisType, metadata: unknown):
 
 export type LiquiditySignal = "expanding" | "contracting" | "neutral";
 export type YieldCurveSignal = "bear_steepener" | "bull_steepener" | "bear_flattener" | "bull_flattener" | "neutral";
-export type CreditRiskSignal = "risk_on" | "risk_off" | "risk_off_confirmed";
+export type CreditRiskSignal = "risk_on" | "risk_off" | "risk_off_confirmed" | "risk_off_severe";
 export type SentimentSignal = "extreme_fear" | "fear" | "neutral" | "greed" | "extreme_greed";
 export type BtcSignal = "bullish" | "bearish_alert" | "neutral";
 export type CorrelationRegime = "synchronized" | "independent" | "neutral";

@@ -15,6 +15,7 @@ export interface ScoreSummary {
 	sizeMultiplier: number;
 	notionalFinal: number;
 	creditVeto: boolean;
+	creditMultiplier: number;
 	corrPenalty: string | null;
 }
 
@@ -77,7 +78,7 @@ export function buildDailyReportPrompt(ctx: ReportContext): string {
 			? ctx.scores
 					.map(
 						(s) =>
-							`  ${s.symbol}: score=${s.score.toFixed(1)} ${s.direction} ${(s.sizeMultiplier * 100).toFixed(0)}% $${s.notionalFinal}${s.creditVeto ? " [VETO]" : ""}${s.corrPenalty ? ` [${s.corrPenalty}]` : ""}`,
+							`  ${s.symbol}: score=${s.score.toFixed(1)} ${s.direction} ${(s.sizeMultiplier * 100).toFixed(0)}% $${s.notionalFinal}${s.creditMultiplier < 1 ? ` [CREDIT×${s.creditMultiplier.toFixed(1)}]` : ""}${s.corrPenalty ? ` [${s.corrPenalty}]` : ""}`,
 					)
 					.join("\n")
 			: "暂无评分";

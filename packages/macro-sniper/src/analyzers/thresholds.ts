@@ -34,10 +34,29 @@ export const CURVE_LOOKBACK_DAYS = 5;
 
 /** Breach ratio below MA: ratio < MA20 * 0.98 = breach by 2% */
 export const CREDIT_BREACH_RATIO = 0.98;
+/** Severe breach: ratio < MA20 * 0.96 = breach by 4%+ */
+export const CREDIT_SEVERE_BREACH_RATIO = 0.96;
 /** Moving average window (trading days) */
 export const CREDIT_MA_WINDOW = 20;
-/** Consecutive confirmation days */
+/** Consecutive days for confirmed signal */
 export const CREDIT_CONFIRM_DAYS = 2;
+/** Consecutive days for severe signal */
+export const CREDIT_SEVERE_CONFIRM_DAYS = 3;
+
+/**
+ * Graduated credit risk multipliers (applied to position sizing).
+ *
+ *   risk_on           → ×1.0  normal
+ *   risk_off          → ×0.7  breach detected, not yet confirmed
+ *   risk_off_confirmed→ ×0.3  confirmed (2+ days breach ≥2%)
+ *   risk_off_severe   → ×0.0  severe (3+ days breach ≥4%, or both HYG+LQD breach)
+ */
+export const CREDIT_RISK_MULTIPLIER: Record<string, number> = {
+	risk_on: 1.0,
+	risk_off: 0.7,
+	risk_off_confirmed: 0.3,
+	risk_off_severe: 0.0,
+};
 
 // ─── D. Sentiment Signal Thresholds ──────────────
 

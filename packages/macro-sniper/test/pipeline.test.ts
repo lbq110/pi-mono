@@ -64,7 +64,7 @@ describe("analyzers", () => {
 		const rows = db.select().from(schema.analysisResults).all();
 		expect(rows.length).toBe(1);
 		expect(rows[0].type).toBe("credit_risk");
-		expect(["risk_on", "risk_off", "risk_off_confirmed"]).toContain(rows[0].signal);
+		expect(["risk_on", "risk_off", "risk_off_confirmed", "risk_off_severe"]).toContain(rows[0].signal);
 
 		const meta = typeof rows[0].metadata === "string" ? JSON.parse(rows[0].metadata) : rows[0].metadata;
 		expect(meta).toHaveProperty("hyg_ief_ratio");

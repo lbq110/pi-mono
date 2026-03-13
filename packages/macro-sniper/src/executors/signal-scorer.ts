@@ -1,9 +1,10 @@
 import { and, asc, desc, eq, gte } from "drizzle-orm";
 import { type ATRResult, atrPositionSize, computeAllATRs } from "../analyzers/atr.js";
+import { CREDIT_RISK_MULTIPLIER, USD_MODEL_WEIGHTS } from "../analyzers/thresholds.js";
 import type { Db } from "../db/client.js";
 import { analysisResults, fxSnapshots, predictionResults, sentimentSnapshots } from "../db/schema.js";
 import { createChildLogger } from "../logger.js";
-import type { CorrelationMatrixMetadata } from "../types.js";
+import type { CorrelationMatrixMetadata, CreditRiskSignalMetadata, UsdModelSignalMetadata } from "../types.js";
 import { getRiskMultiplier } from "./risk-manager.js";
 import type { InflationRegime, InstrumentScore, SubScore, TradedSymbol } from "./types.js";
 
@@ -205,20 +206,154 @@ function buildSentimentScore(compositeScore: number, weight: number): SubScore {
 	};
 }
 
-function buildUsdModelScore(usdCompositeScore: number, symbol: TradedSymbol, weight: number): SubScore {
-	// USD strong (score>50) = headwind for equities, especially QQQ
-	// usd_normalized: +1 when USD bullish (bad for equities), mapped to negative contribution
-	const sensitivity: Record<TradedSymbol, number> = { QQQ: 1.0, SPY: 0.6, IWM: 0.2, BTCUSD: 0.5, UUP: 0 };
-	// (50 - score)/50: if score=70 (bullish USD) → -0.4; if score=30 (bearish USD) → +0.4
-	const usdDirection = (50 - usdCompositeScore) / 50;
-	const normalized = usdDirection * (sensitivity[symbol] ?? 0.5);
+// ─── USD driver-aware equity impact ───────────────
+
+/**
+ * Impact multipliers per USD model factor, controlling how much each factor's
+ * contribution to USD strength translates into equity pressure.
+ *
+ * Design rationale:
+ * - rate_support: Economic strength (real_rate driver) lifting USD is LESS bad for stocks
+ *   than fiscal risk (term_premium driver) lifting USD.
+ * - risk_premium positive (global flight to safety): amplifies negative equity impact.
+ * - risk_premium negative (US-specific risk): USD weak BUT stocks also hurt — flip sign.
+ * - convenience_yield: Structural USD safety premium, weak link to stock fundamentals.
+ * - hedge_transmission: Transmission efficiency metric, not a direction signal.
+ * - global_relative: Passive strength from weak peers does not mean US is weak.
+ */
+const USD_DRIVER_IMPACT = {
+	rate_support: { real_rate: 0.5, term_premium: 1.0, inflation: 0.8, unknown: 0.7 },
+	risk_premium_positive: 1.3,
+	risk_premium_negative: -0.8,
+	convenience_yield: 0.3,
+	hedge_transmission: 0.0,
+	global_relative: 0.4,
+} as const;
+
+/** DXY sensitivity per instrument (unchanged from original) */
+const USD_EQUITY_SENSITIVITY: Record<TradedSymbol, number> = {
+	QQQ: 1.0,
+	SPY: 0.6,
+	IWM: 0.2,
+	BTCUSD: 0.5,
+	UUP: 0,
+};
+
+function getDriverImpactMultiplier(factor: string, deviation: number, yieldDriver: string): number {
+	switch (factor) {
+		case "rate_support": {
+			const rateMap = USD_DRIVER_IMPACT.rate_support;
+			return rateMap[yieldDriver as keyof typeof rateMap] ?? rateMap.unknown;
+		}
+		case "risk_premium":
+			return deviation > 0 ? USD_DRIVER_IMPACT.risk_premium_positive : USD_DRIVER_IMPACT.risk_premium_negative;
+		case "convenience_yield":
+			return USD_DRIVER_IMPACT.convenience_yield;
+		case "hedge_transmission":
+			return USD_DRIVER_IMPACT.hedge_transmission;
+		case "global_relative":
+			return USD_DRIVER_IMPACT.global_relative;
+		default:
+			return 1.0;
+	}
+}
+
+/**
+ * Build USD model sub-score with driver-aware equity impact.
+ *
+ * Instead of treating the composite score as a single "USD strong = bad for stocks"
+ * signal, we decompose the composite into its 5 sub-factors and apply different
+ * impact multipliers based on WHAT is driving USD strength/weakness.
+ *
+ * Key insight: "why USD is strong" matters more than "how strong USD is".
+ * - Economic strength driving USD up → stocks can rally too (impact reduced)
+ * - Crisis/safe-haven driving USD up → stocks likely fall (impact amplified)
+ * - US-specific risk making USD weak → stocks ALSO fall (sign flipped)
+ *
+ * Falls back to simple composite-based logic when metadata is unavailable.
+ */
+function buildUsdModelScore(
+	usdCompositeScore: number,
+	symbol: TradedSymbol,
+	weight: number,
+	usdMeta?: UsdModelSignalMetadata,
+): SubScore {
+	const sensitivity = USD_EQUITY_SENSITIVITY[symbol] ?? 0.5;
+
+	// Fallback: no metadata available → original simple logic
+	if (
+		!usdMeta ||
+		usdMeta.rate_support_score == null ||
+		usdMeta.risk_premium_score == null ||
+		usdMeta.convenience_yield_score == null
+	) {
+		const usdDirection = (50 - usdCompositeScore) / 50;
+		const normalized = usdDirection * sensitivity;
+		return {
+			rawValue: usdCompositeScore,
+			normalized,
+			weight,
+			contribution: normalized * weight * 100,
+			note: `usd_composite=${usdCompositeScore.toFixed(1)}, sensitivity=${sensitivity} (fallback, no metadata)`,
+		};
+	}
+
+	const yieldDriver = usdMeta.yield_decomposition?.driver ?? "unknown";
+
+	// Each factor: deviation from neutral (50), weighted by its model weight,
+	// scaled by its driver-specific impact multiplier
+	const factors = [
+		{ name: "rate_support", score: usdMeta.rate_support_score, modelWeight: USD_MODEL_WEIGHTS.rateSupport },
+		{ name: "risk_premium", score: usdMeta.risk_premium_score, modelWeight: USD_MODEL_WEIGHTS.riskPremium },
+		{
+			name: "convenience_yield",
+			score: usdMeta.convenience_yield_score,
+			modelWeight: USD_MODEL_WEIGHTS.convenienceYield,
+		},
+		{
+			name: "hedge_transmission",
+			score: usdMeta.hedge_transmission_score,
+			modelWeight: USD_MODEL_WEIGHTS.hedgePosition,
+		},
+		{ name: "global_relative", score: usdMeta.global_relative_score, modelWeight: USD_MODEL_WEIGHTS.globalRelative },
+	];
+
+	// Weighted blend: adjustedImpact = Σ(-deviation_i × modelWeight_i × impactMultiplier_i) / 50
+	// When all multipliers are 1.0, this equals the original (50 - composite) / 50
+	let adjustedImpact = 0;
+	const driverNotes: string[] = [];
+
+	for (const f of factors) {
+		const deviation = f.score - 50;
+		const multiplier = getDriverImpactMultiplier(f.name, deviation, yieldDriver);
+		adjustedImpact += -deviation * f.modelWeight * multiplier;
+
+		if (Math.abs(deviation) > 5) {
+			driverNotes.push(`${f.name}=${f.score.toFixed(0)}(×${multiplier})`);
+		}
+	}
+
+	adjustedImpact /= 50; // normalize to roughly [-1, 1]
+	adjustedImpact = Math.max(-1, Math.min(1, adjustedImpact)); // clamp
+
+	const normalized = adjustedImpact * sensitivity;
+
+	const note = [
+		`usd_composite=${usdCompositeScore.toFixed(1)}`,
+		`yield_driver=${yieldDriver}`,
+		`sensitivity=${sensitivity}`,
+		`adjusted_impact=${adjustedImpact.toFixed(3)}`,
+		driverNotes.length > 0 ? `drivers: ${driverNotes.join(", ")}` : null,
+	]
+		.filter(Boolean)
+		.join(", ");
 
 	return {
 		rawValue: usdCompositeScore,
 		normalized,
 		weight,
 		contribution: normalized * weight * 100,
-		note: `usd_model_score=${usdCompositeScore.toFixed(1)}, sensitivity=${sensitivity[symbol] ?? 0.5}`,
+		note,
 	};
 }
 
@@ -259,11 +394,11 @@ function buildCorrRegimeScore(regime: string, marketBias: string, weight: number
 /** Long-only instruments (SPY/QQQ/IWM/BTCUSD): flat or long */
 function scoreToPosition(
 	finalScore: number,
-	creditVeto: boolean,
+	creditMultiplier: number,
 	btcSyncVeto: boolean,
 	marketBiasSignal: string,
 ): { direction: "long" | "flat"; sizeMultiplier: number } {
-	if (creditVeto || btcSyncVeto) return { direction: "flat", sizeMultiplier: 0 };
+	if (btcSyncVeto || creditMultiplier === 0) return { direction: "flat", sizeMultiplier: 0 };
 
 	let direction: "long" | "flat";
 	let sizeMultiplier: number;
@@ -282,6 +417,16 @@ function scoreToPosition(
 	// conflicted cap
 	if (marketBiasSignal === "conflicted" && direction === "long") {
 		sizeMultiplier = Math.min(sizeMultiplier, CONFLICTED_MAX_MULTIPLIER);
+	}
+
+	// Graduated credit risk reduction
+	if (creditMultiplier < 1.0 && direction === "long") {
+		sizeMultiplier *= creditMultiplier;
+		if (sizeMultiplier < 0.05) {
+			// Below 5% → not worth holding
+			direction = "flat";
+			sizeMultiplier = 0;
+		}
 	}
 
 	return { direction, sizeMultiplier };
@@ -351,7 +496,7 @@ function scoreEquity(
 	const curveSignal = curveRow?.signal ?? "neutral";
 	const sentimentMeta = sentimentRow?.metadata as { composite_score?: number } | undefined;
 	const sentimentComposite = sentimentMeta?.composite_score ?? 50;
-	const usdMeta = usdRow?.metadata as { composite_score?: number } | undefined;
+	const usdMeta = usdRow?.metadata as UsdModelSignalMetadata | undefined;
 	const usdComposite = usdMeta?.composite_score ?? 50;
 	const creditSignal = creditRow?.signal ?? "risk_on";
 	const marketBiasSignal = biasRow?.signal ?? "neutral";
@@ -362,7 +507,7 @@ function scoreEquity(
 	const liq = buildLiquidityScore(liquiditySignal, w.liquidity);
 	const curve = buildYieldCurveScore(curveSignal, w.yieldCurve);
 	const sent = buildSentimentScore(sentimentComposite, w.sentiment);
-	const usd = buildUsdModelScore(usdComposite, symbol, w.usdModel);
+	const usd = buildUsdModelScore(usdComposite, symbol, w.usdModel, usdMeta);
 
 	// Weighted sum base score
 	const baseScore = liq.contribution + curve.contribution + sent.contribution + usd.contribution;
@@ -374,8 +519,10 @@ function scoreEquity(
 	// BTC equity modifier (additive)
 	const finalScore = baseScore + rotationMod + btcEquityModifier;
 
-	// Vetoes
-	const creditVeto = creditSignal === "risk_off_confirmed";
+	// Graduated credit risk
+	const creditMeta = creditRow?.metadata as CreditRiskSignalMetadata | undefined;
+	const creditMultiplier = creditMeta?.credit_multiplier ?? CREDIT_RISK_MULTIPLIER[creditSignal] ?? 1.0;
+	const creditVeto = creditMultiplier === 0;
 
 	// Conflicted note
 	const conflictNote =
@@ -383,7 +530,7 @@ function scoreEquity(
 			? `market_bias=conflicted → ${symbol} capped at ${CONFLICTED_MAX_MULTIPLIER * 100}% position`
 			: null;
 
-	const { direction, sizeMultiplier } = scoreToPosition(finalScore, creditVeto, false, marketBiasSignal);
+	const { direction, sizeMultiplier } = scoreToPosition(finalScore, creditMultiplier, false, marketBiasSignal);
 
 	const notionalTarget = positionCap;
 	const notionalFinal = notionalTarget * sizeMultiplier;
@@ -397,6 +544,7 @@ function scoreEquity(
 		notionalTarget,
 		notionalFinal,
 		creditVeto,
+		creditMultiplier,
 		btcSyncVeto: false,
 		inflationRegime: inflation,
 		evidence: {
@@ -445,7 +593,7 @@ function scoreBtc(_db: Db, analysis: Map<string, AnalysisRow>, positionCap: numb
 				? `BTC-SPY 7d_corr=${corrMeta?.btc_spy_7d?.toFixed(2) ?? "?"}, independent mode`
 				: null;
 
-	const { direction, sizeMultiplier } = scoreToPosition(finalScore, false, btcSyncVeto, marketBiasSignal);
+	const { direction, sizeMultiplier } = scoreToPosition(finalScore, 1.0, btcSyncVeto, marketBiasSignal);
 
 	const notionalTarget = positionCap;
 	const notionalFinal = notionalTarget * sizeMultiplier;
@@ -459,6 +607,7 @@ function scoreBtc(_db: Db, analysis: Map<string, AnalysisRow>, positionCap: numb
 		notionalTarget,
 		notionalFinal,
 		creditVeto: false,
+		creditMultiplier: 1.0,
 		btcSyncVeto,
 		inflationRegime: { regime: "warm", bei10y: 0, gld5dMomentum: 0, gld20dTrend: 0 },
 		evidence: {
@@ -555,6 +704,7 @@ function scoreUup(
 		notionalTarget,
 		notionalFinal,
 		creditVeto: false, // credit stress often strengthens USD → no veto
+		creditMultiplier: 1.0, // UUP unaffected by credit risk
 		btcSyncVeto: false,
 		inflationRegime: inflation,
 		evidence: {

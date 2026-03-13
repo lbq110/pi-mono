@@ -5,7 +5,15 @@ import { createChildLogger } from "../logger.js";
 import type { CreditRiskSignal, CreditRiskSignalMetadata } from "../types.js";
 import { validateAnalysisMetadata } from "../types.js";
 import { computeMovingAverage } from "./rolling.js";
-import { CREDIT_BREACH_RATIO, CREDIT_CONFIRM_DAYS, CREDIT_MA_WINDOW, STALE_THRESHOLDS } from "./thresholds.js";
+import {
+	CREDIT_BREACH_RATIO,
+	CREDIT_CONFIRM_DAYS,
+	CREDIT_MA_WINDOW,
+	CREDIT_RISK_MULTIPLIER,
+	CREDIT_SEVERE_BREACH_RATIO,
+	CREDIT_SEVERE_CONFIRM_DAYS,
+	STALE_THRESHOLDS,
+} from "./thresholds.js";
 
 const log = createChildLogger("analyzer");
 
@@ -42,15 +50,25 @@ function computeRatioSeries(
 	return result;
 }
 
+/** Compute breach percentage: how far ratio is below MA20 (negative = below). */
+function breachPct(current: number, ma20: number): number {
+	if (ma20 === 0) return 0;
+	return (current - ma20) / ma20;
+}
+
 /**
- * Analyze credit risk by reading raw data from DB (credit_snapshots table).
- * Computes HYG/IEF and LQD/IEF ratios, checks against 20-day MA.
- * Writes result to analysis_results table.
+ * Analyze credit risk with graduated response.
+ *
+ * Signal levels:
+ *   risk_on           — no breach (multiplier ×1.0)
+ *   risk_off          — breach detected, not yet confirmed (×0.7)
+ *   risk_off_confirmed— 2+ consecutive days breach ≥2% (×0.3)
+ *   risk_off_severe   — 3+ days breach ≥4% OR both HYG+LQD breach confirmed (×0.0)
  */
 export function analyzeCreditRisk(db: Db, date: string): void {
 	log.info({ date }, "Analyzing credit risk");
 
-	const needed = CREDIT_MA_WINDOW + CREDIT_CONFIRM_DAYS + 5; // extra buffer
+	const needed = CREDIT_MA_WINDOW + CREDIT_SEVERE_CONFIRM_DAYS + 5;
 
 	const hygPrices = getSymbolPrices(db, "HYG", needed);
 	const lqdPrices = getSymbolPrices(db, "LQD", needed);
@@ -91,16 +109,24 @@ export function analyzeCreditRisk(db: Db, date: string): void {
 			CREDIT_MA_WINDOW,
 		) ?? 0;
 
-	// Breach detection
+	// Breach detection (standard: 2% below MA20)
 	const hygBreach = hygIefMa20 > 0 && hygIefCurrent < hygIefMa20 * CREDIT_BREACH_RATIO;
 	const lqdBreach = lqdIefMa20 > 0 && lqdIefCurrent < lqdIefMa20 * CREDIT_BREACH_RATIO;
+	const bothBreach = hygBreach && lqdBreach;
 
-	// Consecutive breach days detection
+	// Breach severity (how far below MA20)
+	const hygBreachPct = breachPct(hygIefCurrent, hygIefMa20);
+	const lqdBreachPct = breachPct(lqdIefCurrent, lqdIefMa20);
+
+	// Severe breach detection (4% below MA20)
+	const hygSevereBreach = hygIefMa20 > 0 && hygIefCurrent < hygIefMa20 * CREDIT_SEVERE_BREACH_RATIO;
+	const lqdSevereBreach = lqdIefMa20 > 0 && lqdIefCurrent < lqdIefMa20 * CREDIT_SEVERE_BREACH_RATIO;
+
+	// Consecutive breach days (standard breach)
 	let consecutiveBreachDays = 0;
 	if (hygBreach || lqdBreach) {
 		consecutiveBreachDays = 1;
-		// Check previous days
-		for (let i = hygIefRatios.length - 2; i >= 0 && i >= hygIefRatios.length - CREDIT_CONFIRM_DAYS - 1; i--) {
+		for (let i = hygIefRatios.length - 2; i >= 0 && i >= hygIefRatios.length - CREDIT_SEVERE_CONFIRM_DAYS - 1; i--) {
 			const prevHygRatio = hygIefRatios[i]?.ratio ?? 0;
 			const prevLqdRatio = lqdIefRatios[i]?.ratio ?? 0;
 			const prevHygBreach = hygIefMa20 > 0 && prevHygRatio < hygIefMa20 * CREDIT_BREACH_RATIO;
@@ -113,15 +139,43 @@ export function analyzeCreditRisk(db: Db, date: string): void {
 		}
 	}
 
-	// Determine signal
+	// Consecutive severe breach days
+	let consecutiveSevereDays = 0;
+	if (hygSevereBreach || lqdSevereBreach) {
+		consecutiveSevereDays = 1;
+		for (let i = hygIefRatios.length - 2; i >= 0 && i >= hygIefRatios.length - CREDIT_SEVERE_CONFIRM_DAYS - 1; i--) {
+			const prevHygRatio = hygIefRatios[i]?.ratio ?? 0;
+			const prevLqdRatio = lqdIefRatios[i]?.ratio ?? 0;
+			const prevHygSevere = hygIefMa20 > 0 && prevHygRatio < hygIefMa20 * CREDIT_SEVERE_BREACH_RATIO;
+			const prevLqdSevere = lqdIefMa20 > 0 && prevLqdRatio < lqdIefMa20 * CREDIT_SEVERE_BREACH_RATIO;
+			if (prevHygSevere || prevLqdSevere) {
+				consecutiveSevereDays++;
+			} else {
+				break;
+			}
+		}
+	}
+
+	// ─── Graduated signal determination ──────────
 	let signal: CreditRiskSignal;
-	if (consecutiveBreachDays >= CREDIT_CONFIRM_DAYS) {
+
+	if (
+		consecutiveSevereDays >= CREDIT_SEVERE_CONFIRM_DAYS ||
+		(bothBreach && consecutiveBreachDays >= CREDIT_CONFIRM_DAYS)
+	) {
+		// Severe: 4%+ breach for 3+ days, OR both HYG+LQD in standard breach for 2+ days
+		signal = "risk_off_severe";
+	} else if (consecutiveBreachDays >= CREDIT_CONFIRM_DAYS) {
+		// Confirmed: 2%+ breach for 2+ days (single instrument)
 		signal = "risk_off_confirmed";
 	} else if (hygBreach || lqdBreach) {
+		// Early warning: breach detected but not yet confirmed
 		signal = "risk_off";
 	} else {
 		signal = "risk_on";
 	}
+
+	const creditMultiplier = CREDIT_RISK_MULTIPLIER[signal] ?? 1.0;
 
 	const metadata: CreditRiskSignalMetadata = {
 		hyg_ief_ratio: hygIefCurrent,
@@ -130,7 +184,11 @@ export function analyzeCreditRisk(db: Db, date: string): void {
 		lqd_ief_ma20: lqdIefMa20,
 		hyg_breach: hygBreach,
 		lqd_breach: lqdBreach,
+		hyg_breach_pct: hygBreachPct,
+		lqd_breach_pct: lqdBreachPct,
 		consecutive_breach_days: consecutiveBreachDays,
+		both_breach: bothBreach,
+		credit_multiplier: creditMultiplier,
 		stale: staleSources.length > 0,
 		stale_sources: staleSources,
 	};
@@ -155,5 +213,18 @@ export function analyzeCreditRisk(db: Db, date: string): void {
 		})
 		.run();
 
-	log.info({ date, signal, hygBreach, lqdBreach, consecutiveBreachDays }, "Credit risk analyzed");
+	log.info(
+		{
+			date,
+			signal,
+			creditMultiplier,
+			hygBreach,
+			lqdBreach,
+			bothBreach,
+			consecutiveBreachDays,
+			hygBreachPct: `${(hygBreachPct * 100).toFixed(2)}%`,
+			lqdBreachPct: `${(lqdBreachPct * 100).toFixed(2)}%`,
+		},
+		"Credit risk analyzed",
+	);
 }

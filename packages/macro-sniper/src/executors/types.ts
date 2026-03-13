@@ -29,7 +29,8 @@ export interface InstrumentScore {
 	sizeMultiplier: number; // 0 | 0.5 | 0.75 | 1.0
 	notionalTarget: number; // equity × POSITION_MAX_PCT (20%), then ATR-adjusted
 	notionalFinal: number; // notionalTarget × sizeMultiplier
-	creditVeto: boolean; // credit_risk = risk_off_confirmed
+	creditVeto: boolean; // true when credit_multiplier = 0 (risk_off_severe)
+	creditMultiplier: number; // 1.0 / 0.7 / 0.3 / 0.0 from graduated credit risk
 	btcSyncVeto: boolean; // BTC: synchronized + risk_off
 	inflationRegime: InflationRegime;
 	evidence: {

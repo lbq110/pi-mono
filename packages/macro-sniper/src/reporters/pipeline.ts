@@ -74,6 +74,7 @@ export async function generateDailyReport(
 				sizeMultiplier: s.sizeMultiplier,
 				notionalFinal: s.notionalFinal,
 				creditVeto: s.creditVeto,
+				creditMultiplier: s.creditMultiplier,
 				corrPenalty: s.evidence.corrRegimeNote,
 			});
 		}

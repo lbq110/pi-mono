@@ -57,16 +57,17 @@ describe("analyzer edge cases", () => {
 		expect(rows).toHaveLength(0);
 	});
 
-	it("credit risk: detects risk_off_confirmed on consecutive breach", () => {
-		seedCreditBreach(db);
+	it("credit risk: detects risk_off_severe on consecutive severe breach", () => {
+		seedCreditBreach(db); // HYG drops to 76 → -4.9% below MA20, 3 consecutive days → severe
 		analyzeCreditRisk(db, TODAY);
 
 		const rows = db.select().from(schema.analysisResults).all();
 		expect(rows).toHaveLength(1);
-		expect(rows[0].signal).toBe("risk_off_confirmed");
+		expect(rows[0].signal).toBe("risk_off_severe");
 
 		const meta = typeof rows[0].metadata === "string" ? JSON.parse(rows[0].metadata) : rows[0].metadata;
 		expect(meta.hyg_breach).toBe(true);
+		expect(meta.credit_multiplier).toBe(0.0);
 		expect(meta.consecutive_breach_days).toBeGreaterThanOrEqual(2);
 	});
 

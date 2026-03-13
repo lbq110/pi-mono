@@ -75,10 +75,15 @@ function computeMarketBias(db: Db, date: string): void {
 	let overallBias: "risk_on" | "risk_off" | "neutral" | "conflicted";
 	let confidence: "high" | "medium" | "low";
 
-	// Layer 1: Credit risk_off_confirmed is a veto
-	if (creditSignal === "risk_off_confirmed") {
+	// Layer 1: Graduated credit risk response
+	if (creditSignal === "risk_off_severe") {
 		overallBias = "risk_off";
 		confidence = "high";
+		tags.push("信用风险严重:全部权益清仓(×0.0)");
+	} else if (creditSignal === "risk_off_confirmed") {
+		overallBias = "risk_off";
+		confidence = "high";
+		tags.push("信用风险确认:权益仓位×0.3");
 	} else {
 		// Layer 2: Liquidity × Curve synergy
 		const liquidityBullish = liquiditySignal === "expanding";
@@ -115,12 +120,13 @@ function computeMarketBias(db: Db, date: string): void {
 			confidence = "low";
 		}
 
-		// Credit risk_off (not confirmed) downgrades confidence
+		// Credit risk_off (not confirmed) downgrades confidence, adds position reduction tag
 		if (creditSignal === "risk_off") {
 			if (overallBias === "risk_on") {
-				conflicts.push("信用利差触发 Risk-off 但尚未确认");
+				conflicts.push("信用利差触发 Risk-off 但尚未确认(权益×0.7)");
 				confidence = "low";
 			}
+			tags.push("信用早期预警:权益仓位×0.7");
 		}
 	}
 

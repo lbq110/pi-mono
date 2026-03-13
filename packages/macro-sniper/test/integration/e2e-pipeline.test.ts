@@ -63,12 +63,12 @@ describe("end-to-end pipeline", () => {
 		expect(content).toBe(reports[0].content);
 	});
 
-	it("pipeline with credit risk_off_confirmed triggers veto in market bias", async () => {
+	it("pipeline with credit risk_off_severe triggers veto in market bias", async () => {
 		const db = createTestDb();
 
 		seedLiquidity(db);
 		seedYields(db);
-		seedCreditBreach(db); // HYG breach for consecutive days
+		seedCreditBreach(db); // HYG breach >4% for 3+ consecutive days → severe
 		seedSentiment(db);
 		seedHourlyPrices(db);
 
@@ -84,7 +84,18 @@ describe("end-to-end pipeline", () => {
 		const meta = typeof bias!.metadata === "string" ? JSON.parse(bias!.metadata) : bias!.metadata;
 		expect(meta.overall_bias).toBe("risk_off");
 		expect(meta.confidence).toBe("high");
-		expect(meta.signals.credit).toBe("risk_off_confirmed");
+		expect(meta.signals.credit).toBe("risk_off_severe");
+
+		// Check graduated multiplier in metadata
+		const creditRow = db
+			.select()
+			.from(schema.analysisResults)
+			.all()
+			.find((r) => r.type === "credit_risk");
+		const creditMeta =
+			typeof creditRow!.metadata === "string" ? JSON.parse(creditRow!.metadata) : creditRow!.metadata;
+		expect(creditMeta.credit_multiplier).toBe(0.0);
+		expect(creditMeta.both_breach).toBe(false); // only HYG breaches in seed data
 	});
 
 	it("pipeline with extreme fear + expanding liquidity tags contrarian opportunity", async () => {

@@ -501,7 +501,12 @@ trade
 		}
 		console.log(`\n── Instrument Scores ──`);
 		for (const s of [SPY, QQQ, IWM, BTCUSD, UUP]) {
-			const veto = s.creditVeto ? " [CREDIT_VETO]" : s.btcSyncVeto ? " [BTC_SYNC_VETO]" : "";
+			const creditTag = s.creditVeto
+				? " [CREDIT_SEVERE]"
+				: s.creditMultiplier < 1.0
+					? ` [CREDIT×${s.creditMultiplier.toFixed(1)}]`
+					: "";
+			const veto = creditTag || (s.btcSyncVeto ? " [BTC_SYNC_VETO]" : "");
 			console.log(
 				`  ${s.symbol.padEnd(8)} score=${s.finalScore.toFixed(1).padStart(7)}  ${s.direction.padEnd(5)}  ${(s.sizeMultiplier * 100).toFixed(0).padStart(3)}%  $${s.notionalFinal.toFixed(0).padStart(6)}${veto}`,
 			);
