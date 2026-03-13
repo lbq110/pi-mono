@@ -78,6 +78,7 @@ export const hourlyPrices = sqliteTable(
 		low: real("low").notNull(),
 		close: real("close").notNull(),
 		volume: real("volume").notNull(),
+		vwap: real("vwap"), // volume-weighted average price (BTC only, from Binance quoteVol/vol)
 	},
 	(t) => [uniqueIndex("uq_hourly_symbol_datetime").on(t.symbol, t.datetime)],
 );

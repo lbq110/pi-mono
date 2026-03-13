@@ -22,7 +22,15 @@ const HOURLY_SYMBOLS: Record<string, string> = {
 function upsertHourlyCandle(
 	db: Db,
 	symbol: string,
-	candle: { datetime: string; open: number; high: number; low: number; close: number; volume: number },
+	candle: {
+		datetime: string;
+		open: number;
+		high: number;
+		low: number;
+		close: number;
+		volume: number;
+		vwap?: number;
+	},
 ): void {
 	db.insert(hourlyPrices)
 		.values({
@@ -33,6 +41,7 @@ function upsertHourlyCandle(
 			low: candle.low,
 			close: candle.close,
 			volume: candle.volume,
+			vwap: candle.vwap ?? null,
 		})
 		.onConflictDoUpdate({
 			target: [hourlyPrices.symbol, hourlyPrices.datetime],
@@ -42,6 +51,7 @@ function upsertHourlyCandle(
 				low: candle.low,
 				close: candle.close,
 				volume: candle.volume,
+				vwap: candle.vwap ?? null,
 			},
 		})
 		.run();
@@ -85,7 +95,7 @@ export async function collectHourlyPrices(db: Db): Promise<void> {
 		}
 	}
 
-	// ─── BTC hourly klines from Binance ──────────
+	// ─── BTC hourly klines from Binance (with VWAP) ──
 	try {
 		const candles = await fetchBtcHourlyKlines(168); // 7 days
 		let inserted = 0;
@@ -93,7 +103,12 @@ export async function collectHourlyPrices(db: Db): Promise<void> {
 			upsertHourlyCandle(db, "BTCUSD", candle);
 			inserted++;
 		}
-		log.info({ symbol: "BTCUSD", candles: inserted }, "BTC hourly klines collected");
+		// Store latest VWAP in sentiment_snapshots for signal analysis
+		if (candles.length > 0) {
+			const latest = candles[candles.length - 1];
+			upsertSentiment(db, "binance", "btc_vwap", latest.vwap, today);
+		}
+		log.info({ symbol: "BTCUSD", candles: inserted }, "BTC hourly klines collected (with VWAP)");
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
 		log.error({ error: message }, "Failed to collect BTC hourly klines");
@@ -126,7 +141,7 @@ export function getHourlyCandles(
 	db: Db,
 	symbol: string,
 	limit: number,
-): { datetime: string; open: number; high: number; low: number; close: number; volume: number }[] {
+): { datetime: string; open: number; high: number; low: number; close: number; volume: number; vwap: number | null }[] {
 	return db
 		.select({
 			datetime: hourlyPrices.datetime,
@@ -135,6 +150,7 @@ export function getHourlyCandles(
 			low: hourlyPrices.low,
 			close: hourlyPrices.close,
 			volume: hourlyPrices.volume,
+			vwap: hourlyPrices.vwap,
 		})
 		.from(hourlyPrices)
 		.where(eq(hourlyPrices.symbol, symbol))

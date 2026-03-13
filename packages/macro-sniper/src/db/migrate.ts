@@ -346,6 +346,9 @@ export function runMigrationsOnDb(db: Db): void {
 		}
 	};
 
+	// hourly_prices vwap
+	addCol("hourly_prices", "vwap", "REAL");
+
 	// prediction_snapshots new columns
 	addCol("prediction_snapshots", "predicted_liquidity", "TEXT");
 	addCol("prediction_snapshots", "predicted_credit", "TEXT");

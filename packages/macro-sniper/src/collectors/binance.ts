@@ -97,9 +97,18 @@ export async function fetchBtc24hStats(): Promise<{
  * Fetch BTC/USDT 1h OHLCV klines from Binance.
  * Returns up to `limit` candles (default 168 = 7 days).
  */
-export async function fetchBtcHourlyKlines(
-	limit = 168,
-): Promise<{ datetime: string; open: number; high: number; low: number; close: number; volume: number }[]> {
+export interface BtcKline {
+	datetime: string;
+	open: number;
+	high: number;
+	low: number;
+	close: number;
+	volume: number; // BTC volume
+	quoteVolume: number; // USDT volume
+	vwap: number; // quoteVolume / volume (volume-weighted average price)
+}
+
+export async function fetchBtcHourlyKlines(limit = 168): Promise<BtcKline[]> {
 	const url = `https://api.binance.com/api/v3/klines?symbol=BTCUSDT&interval=1h&limit=${limit}`;
 
 	for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
@@ -107,17 +116,33 @@ export async function fetchBtcHourlyKlines(
 			const response = await fetch(url);
 			if (!response.ok) throw new Error(`Binance API returned ${response.status}`);
 
-			// Kline format: [openTime, open, high, low, close, volume, closeTime, ...]
-			const json = (await response.json()) as [number, string, string, string, string, string, ...unknown[]][];
+			// Kline: [openTime, open, high, low, close, volume, closeTime, quoteAssetVolume, ...]
+			const json = (await response.json()) as [
+				number,
+				string,
+				string,
+				string,
+				string,
+				string,
+				number,
+				string,
+				...unknown[],
+			][];
 
-			return json.map((k) => ({
-				datetime: new Date(k[0]).toISOString(),
-				open: Number.parseFloat(k[1]),
-				high: Number.parseFloat(k[2]),
-				low: Number.parseFloat(k[3]),
-				close: Number.parseFloat(k[4]),
-				volume: Number.parseFloat(k[5]),
-			}));
+			return json.map((k) => {
+				const vol = Number.parseFloat(k[5]);
+				const quoteVol = Number.parseFloat(k[7] as string);
+				return {
+					datetime: new Date(k[0]).toISOString(),
+					open: Number.parseFloat(k[1]),
+					high: Number.parseFloat(k[2]),
+					low: Number.parseFloat(k[3]),
+					close: Number.parseFloat(k[4]),
+					volume: vol,
+					quoteVolume: quoteVol,
+					vwap: vol > 0 ? quoteVol / vol : Number.parseFloat(k[4]),
+				};
+			});
 		} catch (error) {
 			const isLastAttempt = attempt === MAX_RETRIES;
 			const message = error instanceof Error ? error.message : String(error);
