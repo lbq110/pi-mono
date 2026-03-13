@@ -170,10 +170,11 @@ export const btcSignalMetadataSchema = z.object({
 	active_addresses: z.number().nullable(),
 	onchain_score: z.number(), // 0-100 pillar score
 
-	// ETF flow proxy
+	// ETF volume-price divergence
 	etf_dollar_volume: z.number().nullable(), // combined IBIT+FBTC+ARKB+GBTC daily $ vol
 	etf_volume_ratio: z.number().nullable(), // vs 20d average
-	etf_flow_score: z.number(), // 0-100 pillar score
+	etf_divergence_type: z.enum(["absorption", "momentum_confirm", "weak_rally", "apathy", "no_data"]),
+	etf_flow_score: z.number(), // 0-100 divergence-based score
 
 	// Composite
 	composite_score: z.number(), // 0-100 weighted composite

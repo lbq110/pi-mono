@@ -69,11 +69,11 @@ export const BTC_SIGNAL_WEIGHTS = {
 	/** Price technicals: MA7d, volume, momentum */
 	technicals: 0.3,
 	/** Derivatives: funding rate, long/short, OI change, taker ratio */
-	derivatives: 0.3,
+	derivatives: 0.35,
 	/** On-chain: MVRV, exchange netflow, active addresses */
-	onchain: 0.2,
-	/** ETF: dollar volume ratio as flow proxy */
-	etfFlow: 0.2,
+	onchain: 0.25,
+	/** ETF volume-price divergence (lagging data, low weight) */
+	etfFlow: 0.1,
 };
 
 /** Funding rate normalization: typical range ±0.03% (8h) */
@@ -101,9 +101,25 @@ export const MVRV_OVERHEATED = 3.5;
 export const EXCHANGE_NETFLOW_SELL_THRESHOLD = 500; // BTC, net inflow
 export const EXCHANGE_NETFLOW_ACCUM_THRESHOLD = -500; // BTC, net outflow
 
-/** ETF dollar volume: ratio vs 20-day MA — above 1.3 = strong, below 0.7 = weak */
+/** ETF dollar volume ratio vs 20-day MA thresholds */
 export const ETF_VOLUME_RATIO_HIGH = 1.3;
 export const ETF_VOLUME_RATIO_LOW = 0.7;
+
+/**
+ * ETF volume-price divergence scoring.
+ *
+ * Raw ETF volume is already priced in. The forward-looking signal is the
+ * DIVERGENCE between volume and price:
+ *   - High volume + flat/falling price  → absorption / hidden demand (bullish)
+ *   - High volume + rising price        → momentum confirmation (neutral — already in price)
+ *   - Low volume  + rising price        → rally losing steam (bearish)
+ *   - Low volume  + flat/falling price  → apathy (neutral)
+ *
+ * "High volume" = ETF vol ratio > ETF_DIVERGENCE_VOL_SURGE
+ * "Rising price" = BTC 24h change > ETF_DIVERGENCE_PRICE_MOVE_PCT
+ */
+export const ETF_DIVERGENCE_VOL_SURGE = 1.2; // vol ratio threshold for "high volume"
+export const ETF_DIVERGENCE_PRICE_MOVE_PCT = 1.0; // % threshold for "rising price"
 
 // ─── F. USD Model Thresholds ─────────────────────
 

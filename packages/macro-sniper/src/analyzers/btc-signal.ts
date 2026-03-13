@@ -6,8 +6,8 @@ import type { BtcSignal, BtcSignalMetadata } from "../types.js";
 import { validateAnalysisMetadata } from "../types.js";
 import {
 	BTC_SIGNAL_WEIGHTS,
-	ETF_VOLUME_RATIO_HIGH,
-	ETF_VOLUME_RATIO_LOW,
+	ETF_DIVERGENCE_PRICE_MOVE_PCT,
+	ETF_DIVERGENCE_VOL_SURGE,
 	EXCHANGE_NETFLOW_ACCUM_THRESHOLD,
 	EXCHANGE_NETFLOW_SELL_THRESHOLD,
 	FUNDING_RATE_HIGH,
@@ -316,22 +316,36 @@ function computeOnchain(db: Db): OnchainResult {
 	return { score, mvrv, netExchangeFlow: netFlow, activeAddresses: activeAddr };
 }
 
-// ─── Pillar 4: ETF Flow Proxy ────────────────────
+// ─── Pillar 4: ETF Volume-Price Divergence ───────
+
+type EtfDivergenceType = "absorption" | "momentum_confirm" | "weak_rally" | "apathy" | "no_data";
 
 interface EtfFlowResult {
 	score: number; // 0-100
 	etfDollarVolume: number | null;
 	etfVolumeRatio: number | null; // vs 20d MA
+	divergenceType: EtfDivergenceType;
 }
 
-function computeEtfFlow(db: Db): EtfFlowResult {
+/**
+ * ETF volume-price divergence scoring.
+ *
+ * Raw ETF volume is already priced in — high volume on an up day just confirms
+ * what already happened. The forward-looking signal is the DIVERGENCE:
+ *
+ *   absorption       (75): High vol + flat/down price → hidden demand, bullish
+ *   momentum_confirm (55): High vol + up price        → already priced in, slight positive
+ *   weak_rally       (30): Low vol  + up price        → rally losing steam, bearish
+ *   apathy           (50): Low vol  + flat/down price → no signal, neutral
+ */
+function computeEtfFlow(db: Db, btcChange24h: number): EtfFlowResult {
 	const etfDollarVolume = getSentimentValue(db, "yahoo", "btc_etf_dollar_volume");
 
 	if (etfDollarVolume === null) {
-		return { score: 50, etfDollarVolume: null, etfVolumeRatio: null };
+		return { score: 50, etfDollarVolume: null, etfVolumeRatio: null, divergenceType: "no_data" };
 	}
 
-	// Compute ratio vs recent average (using stored history)
+	// Compute ratio vs recent average
 	const recentVols = getSentimentValues(db, "yahoo", "btc_etf_dollar_volume", 20);
 	let ratio = 1.0;
 	if (recentVols.length >= 5) {
@@ -339,10 +353,33 @@ function computeEtfFlow(db: Db): EtfFlowResult {
 		ratio = avg > 0 ? etfDollarVolume / avg : 1;
 	}
 
-	// High volume = strong interest = bullish (especially with price up)
-	const score = norm(ratio, ETF_VOLUME_RATIO_LOW, ETF_VOLUME_RATIO_HIGH, false);
+	const highVolume = ratio >= ETF_DIVERGENCE_VOL_SURGE;
+	const priceRising = btcChange24h > ETF_DIVERGENCE_PRICE_MOVE_PCT;
+	const priceFalling = btcChange24h < -ETF_DIVERGENCE_PRICE_MOVE_PCT;
 
-	return { score, etfDollarVolume, etfVolumeRatio: ratio };
+	let score: number;
+	let divergenceType: EtfDivergenceType;
+
+	if (highVolume && !priceRising) {
+		// High volume but price flat or falling → absorption (hidden demand)
+		// Stronger signal if price is actually falling (more divergent)
+		divergenceType = "absorption";
+		score = priceFalling ? 80 : 70;
+	} else if (highVolume && priceRising) {
+		// High volume + rising price → momentum confirmation (already priced in)
+		divergenceType = "momentum_confirm";
+		score = 55;
+	} else if (!highVolume && priceRising) {
+		// Low volume + rising price → rally losing steam
+		divergenceType = "weak_rally";
+		score = 30;
+	} else {
+		// Low volume + flat/falling price → no meaningful signal
+		divergenceType = "apathy";
+		score = 50;
+	}
+
+	return { score, etfDollarVolume, etfVolumeRatio: ratio, divergenceType };
 }
 
 // ─── Main analyzer ────────────────────────────────
@@ -350,9 +387,13 @@ function computeEtfFlow(db: Db): EtfFlowResult {
 /**
  * Analyze BTC signal using 4-pillar model:
  *   1. Price technicals (30%): MA7d, volume, momentum
- *   2. Derivatives (30%): funding rate, long/short, OI change, taker ratio
- *   3. On-chain (20%): MVRV, exchange netflow, active addresses
- *   4. ETF flow proxy (20%): combined ETF dollar volume vs average
+ *   2. Derivatives (35%): funding rate, long/short, OI change, taker ratio
+ *   3. On-chain (25%): MVRV, exchange netflow, active addresses
+ *   4. ETF volume-price divergence (10%): forward-looking divergence signal
+ *
+ * ETF volume is already priced in — the signal comes from volume-price
+ * DIVERGENCE: high vol + flat price = hidden demand (bullish);
+ * low vol + rising price = weak rally (bearish).
  *
  * Signal output:
  *   bearish_alert  — 24h change < -5% (sharp drop, equity modifier = -10)
@@ -375,8 +416,8 @@ export function analyzeBtcSignal(db: Db, date: string): void {
 	// ─── Pillar 3: On-chain ──────────────────────
 	const onchain = computeOnchain(db);
 
-	// ─── Pillar 4: ETF Flow Proxy ────────────────
-	const etf = computeEtfFlow(db);
+	// ─── Pillar 4: ETF Volume-Price Divergence ───
+	const etf = computeEtfFlow(db, tech.change24h);
 
 	// ─── Weighted composite ──────────────────────
 	const compositeScore =
@@ -437,9 +478,10 @@ export function analyzeBtcSignal(db: Db, date: string): void {
 		active_addresses: onchain.activeAddresses,
 		onchain_score: onchain.score,
 
-		// ETF
+		// ETF volume-price divergence
 		etf_dollar_volume: etf.etfDollarVolume,
 		etf_volume_ratio: etf.etfVolumeRatio,
+		etf_divergence_type: etf.divergenceType,
 		etf_flow_score: etf.score,
 
 		// Composite

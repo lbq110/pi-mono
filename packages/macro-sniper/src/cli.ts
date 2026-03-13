@@ -336,11 +336,12 @@ program
 			console.log(`  MVRV:        ${meta.mvrv?.toFixed(4) ?? "n/a"}`);
 			console.log(`  Net Ex Flow: ${meta.net_exchange_flow?.toFixed(2) ?? "n/a"} BTC`);
 			console.log(`  Active Addr: ${meta.active_addresses?.toFixed(0) ?? "n/a"}`);
-			console.log(`\n── ETF Flow ──`);
+			console.log(`\n── ETF Divergence ──`);
 			console.log(
 				`  Dollar Vol:  $${meta.etf_dollar_volume ? `${(meta.etf_dollar_volume / 1e6).toFixed(0)}M` : "n/a"}`,
 			);
 			console.log(`  Vol Ratio:   ${meta.etf_volume_ratio?.toFixed(2) ?? "n/a"}`);
+			console.log(`  Divergence:  ${meta.etf_divergence_type ?? "n/a"}`);
 			console.log(`\n  Equity Modifier: ${meta.equity_score_modifier}`);
 			if (meta.stale_sources?.length > 0) {
 				console.log(`  Stale: ${meta.stale_sources.join(", ")}`);
