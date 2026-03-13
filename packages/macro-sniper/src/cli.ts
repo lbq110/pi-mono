@@ -8,11 +8,16 @@ import { analyzeLiquiditySignal } from "./analyzers/liquidity-signal.js";
 import { analyzeUsdModel } from "./analyzers/usd-model.js";
 import {
 	collectCreditSpreads,
+	collectEconomicCalendar,
 	collectHourlyPrices,
 	collectLiquidity,
+	collectMacroEvents,
 	collectSentiment,
 	collectUsdModelData,
 	collectYields,
+	getLatestMacroEvent,
+	getUpcomingEvents,
+	MACRO_SERIES,
 } from "./collectors/index.js";
 import { loadConfig } from "./config.js";
 import { closeDb, getDb } from "./db/client.js";
@@ -114,6 +119,26 @@ collect
 	});
 
 collect
+	.command("macro")
+	.description("Collect high-impact macro events (CPI, NFP, FOMC, PCE, GDP, etc.)")
+	.action(async () => {
+		const config = loadConfig();
+		const db = initDb();
+		await collectMacroEvents(db, config.FRED_API_KEY);
+		closeDb();
+	});
+
+collect
+	.command("calendar")
+	.description("Collect economic calendar (FRED release dates)")
+	.action(async () => {
+		const config = loadConfig();
+		const db = initDb();
+		await collectEconomicCalendar(db, config.FRED_API_KEY);
+		closeDb();
+	});
+
+collect
 	.command("all")
 	.description("Collect all data sources")
 	.action(async () => {
@@ -125,6 +150,8 @@ collect
 		await collectSentiment(db, { fredApiKey: config.FRED_API_KEY });
 		await collectUsdModelData(db, config.FRED_API_KEY);
 		await collectHourlyPrices(db);
+		await collectMacroEvents(db, config.FRED_API_KEY);
+		await collectEconomicCalendar(db, config.FRED_API_KEY);
 		closeDb();
 	});
 
@@ -347,6 +374,59 @@ program
 				console.log(`  Stale: ${meta.stale_sources.join(", ")}`);
 			}
 		}
+		closeDb();
+	});
+
+// ─── macro commands ──────────────────────────────
+
+program
+	.command("macro")
+	.description("Display latest macro event data and upcoming calendar")
+	.action(() => {
+		const db = initDb();
+
+		console.log("\n══ Latest Macro Events ══\n");
+		for (const series of MACRO_SERIES) {
+			const event = getLatestMacroEvent(db, series.eventType);
+			if (event) {
+				const mom =
+					event.momChange !== null
+						? `MoM=${event.momChange >= 0 ? "+" : ""}${event.momChange.toFixed(2)}${series.eventType === "nfp" ? "K" : "%"}`
+						: "";
+				const yoy =
+					event.yoyChange !== null
+						? `YoY=${event.yoyChange >= 0 ? "+" : ""}${event.yoyChange.toFixed(2)}${series.eventType === "nfp" ? "K" : "%"}`
+						: "";
+				const impact = series.impact === "high" ? "★★★" : "★★";
+				console.log(
+					`  ${impact} ${series.name.padEnd(30)} ${event.releaseDate}  val=${event.value.toFixed(series.eventType === "unemployment" || series.eventType === "fomc" ? 2 : 1)}  ${mom}  ${yoy}`,
+				);
+			} else {
+				console.log(`  ${"   "} ${series.name.padEnd(30)} (no data)`);
+			}
+		}
+
+		console.log("\n══ Upcoming Events (7 days) ══\n");
+		const upcoming = getUpcomingEvents(db, 7);
+		if (upcoming.length === 0) {
+			console.log("  No upcoming events in the next 7 days");
+		} else {
+			const seen = new Set<string>();
+			for (const ev of upcoming) {
+				// Dedup: same date + same release often has multiple event types (CPI + Core CPI)
+				const key = `${ev.releaseDate}:${ev.fredReleaseId}`;
+				if (seen.has(key)) continue;
+				seen.add(key);
+				const impact = ev.impact === "high" ? "★★★" : "★★";
+				const types = upcoming
+					.filter((e) => e.releaseDate === ev.releaseDate && e.fredReleaseId === ev.fredReleaseId)
+					.map((e) => e.eventType)
+					.join(", ");
+				console.log(`  ${ev.releaseDate} ${ev.releaseTime ?? "??:??"} ET  ${impact} ${ev.releaseName} [${types}]`);
+			}
+		}
+		console.log("");
+
 		closeDb();
 	});
 

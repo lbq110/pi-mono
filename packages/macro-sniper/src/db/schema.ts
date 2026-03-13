@@ -197,6 +197,32 @@ export const predictionResults = sqliteTable("prediction_results", {
 	createdAt: text("created_at").notNull(),
 });
 
+// ─── Macro Events (high-impact economic data) ────
+
+export const macroEvents = sqliteTable("macro_events", {
+	id: integer("id").primaryKey({ autoIncrement: true }),
+	eventType: text("event_type").notNull(), // cpi, nfp, fomc, pce, gdp, ppi, claims, retail, michigan
+	seriesId: text("series_id").notNull(), // FRED series ID
+	releaseDate: text("release_date").notNull(), // data observation date
+	value: real("value").notNull(),
+	previousValue: real("previous_value"),
+	momChange: real("mom_change"), // month-over-month change %
+	yoyChange: real("yoy_change"), // year-over-year change %
+	fetchedAt: text("fetched_at").notNull(),
+});
+
+export const macroCalendar = sqliteTable("macro_calendar", {
+	id: integer("id").primaryKey({ autoIncrement: true }),
+	eventType: text("event_type").notNull(), // cpi, nfp, fomc, etc.
+	releaseName: text("release_name").notNull(), // human label
+	fredReleaseId: integer("fred_release_id"), // FRED release ID
+	releaseDate: text("release_date").notNull(), // scheduled date YYYY-MM-DD
+	releaseTime: text("release_time"), // "08:30", "14:00", etc.
+	impact: text("impact").notNull(), // "high" | "medium"
+	status: text("status").notNull(), // "upcoming" | "released"
+	fetchedAt: text("fetched_at").notNull(),
+});
+
 // ─── Job Runs (written by job scheduler) ─────────
 
 export const jobRuns = sqliteTable("job_runs", {

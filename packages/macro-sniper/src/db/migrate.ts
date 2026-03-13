@@ -9,6 +9,8 @@ import {
 	hourlyPrices,
 	jobRuns,
 	liquiditySnapshots,
+	macroCalendar,
+	macroEvents,
 	orders,
 	positions,
 	predictionResults,
@@ -257,6 +259,42 @@ export function runMigrationsOnDb(db: Db): void {
 	db.run(
 		sql`CREATE UNIQUE INDEX IF NOT EXISTS uq_pred_results_snap_horizon ON prediction_results(snapshot_id, horizon)`,
 	);
+
+	// ─── Macro Events + Calendar ─────────────────
+
+	db.run(sql`
+		CREATE TABLE IF NOT EXISTS ${macroEvents} (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			event_type TEXT NOT NULL,
+			series_id TEXT NOT NULL,
+			release_date TEXT NOT NULL,
+			value REAL NOT NULL,
+			previous_value REAL,
+			mom_change REAL,
+			yoy_change REAL,
+			fetched_at TEXT NOT NULL
+		)
+	`);
+
+	db.run(sql`CREATE UNIQUE INDEX IF NOT EXISTS uq_macro_event_series_date ON macro_events(series_id, release_date)`);
+	db.run(sql`CREATE INDEX IF NOT EXISTS idx_macro_event_type_date ON macro_events(event_type, release_date)`);
+
+	db.run(sql`
+		CREATE TABLE IF NOT EXISTS ${macroCalendar} (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			event_type TEXT NOT NULL,
+			release_name TEXT NOT NULL,
+			fred_release_id INTEGER,
+			release_date TEXT NOT NULL,
+			release_time TEXT,
+			impact TEXT NOT NULL,
+			status TEXT NOT NULL,
+			fetched_at TEXT NOT NULL
+		)
+	`);
+
+	db.run(sql`CREATE UNIQUE INDEX IF NOT EXISTS uq_macro_cal_type_date ON macro_calendar(event_type, release_date)`);
+	db.run(sql`CREATE INDEX IF NOT EXISTS idx_macro_cal_date ON macro_calendar(release_date)`);
 
 	// ─── Risk events ──────────────────────────────
 

@@ -1,6 +1,7 @@
 import { and, asc, desc, eq, gte } from "drizzle-orm";
 import { type ATRResult, atrPositionSize, computeAllATRs } from "../analyzers/atr.js";
 import { CREDIT_RISK_MULTIPLIER, USD_MODEL_WEIGHTS } from "../analyzers/thresholds.js";
+import { hasTodayHighImpactEvent } from "../collectors/macro-events.js";
 import type { Db } from "../db/client.js";
 import { analysisResults, fxSnapshots, predictionResults, sentimentSnapshots } from "../db/schema.js";
 import { createChildLogger } from "../logger.js";
@@ -39,6 +40,11 @@ const CORR_PENALTY_MULTIPLIER = 0.7;
 const KELLY_MIN_SAMPLES = 20;
 /** Kelly fraction: use 1/4 Kelly as conservative cap */
 const KELLY_FRACTION = 0.25;
+
+// ─── Event risk reduction ─────────────────────────
+
+/** Position multiplier on high-impact event days (CPI, NFP, FOMC, etc.) */
+const EVENT_DAY_MULTIPLIER = 0.7;
 
 // ─── DB readers ───────────────────────────────────
 
@@ -893,6 +899,23 @@ export function scoreAllInstruments(db: Db, accountEquity?: number): AllScores {
 		}
 	}
 
+	// ─── Layer 5: Event risk reduction ────────────
+	let eventDayActive = false;
+	try {
+		eventDayActive = hasTodayHighImpactEvent(db);
+	} catch {
+		// Calendar table may not exist yet — safe to ignore
+	}
+	if (eventDayActive) {
+		log.info({ multiplier: EVENT_DAY_MULTIPLIER }, "High-impact event day — reducing equity positions");
+		for (const score of Object.values(scores)) {
+			// Only reduce equity positions; UUP and BTC less affected by CPI/NFP directly
+			if (score.symbol === "SPY" || score.symbol === "QQQ" || score.symbol === "IWM") {
+				score.sizeMultiplier *= EVENT_DAY_MULTIPLIER;
+			}
+		}
+	}
+
 	// Recalculate notionalFinal after all adjustments
 	for (const score of Object.values(scores)) {
 		score.notionalFinal = Math.round(score.notionalTarget * score.sizeMultiplier);
@@ -951,7 +974,7 @@ export function scoreAllInstruments(db: Db, accountEquity?: number): AllScores {
 				notional: uup.notionalFinal,
 			},
 		},
-		"Instrument scores computed (ATR + correlation + drawdown + Kelly)",
+		"Instrument scores computed (ATR + correlation + drawdown + Kelly + event)",
 	);
 
 	return {

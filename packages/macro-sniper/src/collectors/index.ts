@@ -15,6 +15,15 @@ export { clearFredCache, fetchFredSeries, getFredRequestCount, resetFredRequestC
 export { collectFxRates } from "./fx.js";
 export { collectHourlyPrices, getHourlyCandles } from "./hourly.js";
 export { collectLiquidity } from "./liquidity.js";
+export {
+	collectEconomicCalendar,
+	collectMacroEvents,
+	getLatestMacroEvent,
+	getTodayEvents,
+	getUpcomingEvents,
+	hasTodayHighImpactEvent,
+	MACRO_SERIES,
+} from "./macro-events.js";
 export { collectSentiment } from "./sentiment.js";
 export { collectUsdModelData } from "./usd-model.js";
 export { fetchYahooHistory, fetchYahooHourlyKlines, fetchYahooQuote } from "./yahoo.js";

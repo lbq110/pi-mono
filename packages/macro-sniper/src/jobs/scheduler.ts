@@ -1,11 +1,14 @@
 import cron from "node-cron";
 import {
 	collectCreditSpreads,
+	collectEconomicCalendar,
 	collectHourlyPrices,
 	collectLiquidity,
+	collectMacroEvents,
 	collectSentiment,
 	collectUsdModelData,
 	collectYields,
+	hasTodayHighImpactEvent,
 } from "../collectors/index.js";
 import { loadConfig } from "../config.js";
 import { getDb } from "../db/client.js";
@@ -44,6 +47,8 @@ export async function runFullPipeline(streamText: (prompt: string, model: string
 		});
 		await collectUsdModelData(db, config.FRED_API_KEY);
 		await collectHourlyPrices(db);
+		await collectMacroEvents(db, config.FRED_API_KEY);
+		await collectEconomicCalendar(db, config.FRED_API_KEY);
 		finishJobRun(db, collectRunId, "success");
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
@@ -65,7 +70,7 @@ export async function runFullPipeline(streamText: (prompt: string, model: string
 	// Step 3: Report
 	const reportRunId = startJobRun(db, "report");
 	try {
-		const content = await generateDailyReport(db, today, streamText, config.LLM_MODEL_FAST);
+		const content = await generateDailyReport(db, today, streamText, config.LLM_MODEL_HEAVY);
 		finishJobRun(db, reportRunId, "success");
 
 		// Step 4: Trade execution
@@ -145,27 +150,17 @@ export function startScheduler(streamText: (prompt: string, model: string) => Pr
 		),
 	);
 
-	// Yield collection at 17:30 ET
+	// ─── Yield + Credit: after market close ──────
+	// FRED yields update ~18:00 ET; Yahoo credit ETFs settle by 16:30 ET
 	scheduledTasks.push(
 		cron.schedule(
-			"30 17 * * *",
+			"0 18 * * 1-5",
 			() => {
 				const config = loadConfig();
 				const db = getDb();
 				collectYields(db, config.FRED_API_KEY).catch((err) =>
 					log.error({ error: err instanceof Error ? err.message : String(err) }, "Yield collection failed"),
 				);
-			},
-			{ timezone },
-		),
-	);
-
-	// Credit spread collection at 17:45 ET
-	scheduledTasks.push(
-		cron.schedule(
-			"45 17 * * *",
-			() => {
-				const db = getDb();
 				collectCreditSpreads(db).catch((err) =>
 					log.error(
 						{ error: err instanceof Error ? err.message : String(err) },
@@ -177,7 +172,99 @@ export function startScheduler(streamText: (prompt: string, model: string) => Pr
 		),
 	);
 
-	// T+5 prediction accuracy check at 09:30 ET (after market open, prices settled)
+	// ─── Liquidity: Thu 17:00 ET (WALCL updates ~16:30 ET on Thursdays) ──
+	scheduledTasks.push(
+		cron.schedule(
+			"0 17 * * 4",
+			() => {
+				const config = loadConfig();
+				const db = getDb();
+				collectLiquidity(db, config.FRED_API_KEY).catch((err) =>
+					log.error({ error: err instanceof Error ? err.message : String(err) }, "Liquidity collection failed"),
+				);
+			},
+			{ timezone },
+		),
+	);
+
+	// ─── Macro events: post-release collection ───
+	// Most releases are 08:30 or 10:00 ET → collect at 08:45 and 10:15
+	scheduledTasks.push(
+		cron.schedule(
+			"45 8 * * 1-5",
+			() => {
+				const config = loadConfig();
+				const db = getDb();
+				// Only fetch if today has events (avoid wasting FRED requests)
+				if (hasTodayHighImpactEvent(db)) {
+					log.info("High-impact event today — collecting macro data post 08:30 release");
+					collectMacroEvents(db, config.FRED_API_KEY).catch((err) =>
+						log.error(
+							{ error: err instanceof Error ? err.message : String(err) },
+							"Macro event collection failed",
+						),
+					);
+				}
+			},
+			{ timezone },
+		),
+	);
+
+	// 10:15 ET catch for 10:00 releases (ISM, Michigan Sentiment)
+	scheduledTasks.push(
+		cron.schedule(
+			"15 10 * * 1-5",
+			() => {
+				const config = loadConfig();
+				const db = getDb();
+				if (hasTodayHighImpactEvent(db)) {
+					log.info("Collecting macro data post 10:00 release");
+					collectMacroEvents(db, config.FRED_API_KEY).catch((err) =>
+						log.error(
+							{ error: err instanceof Error ? err.message : String(err) },
+							"Macro event collection failed",
+						),
+					);
+				}
+			},
+			{ timezone },
+		),
+	);
+
+	// FOMC: 14:15 ET (decisions at 14:00)
+	scheduledTasks.push(
+		cron.schedule(
+			"15 14 * * 3",
+			() => {
+				const config = loadConfig();
+				const db = getDb();
+				if (hasTodayHighImpactEvent(db)) {
+					log.info("FOMC decision day — collecting post 14:00 release");
+					collectMacroEvents(db, config.FRED_API_KEY).catch((err) =>
+						log.error({ error: err instanceof Error ? err.message : String(err) }, "FOMC collection failed"),
+					);
+				}
+			},
+			{ timezone },
+		),
+	);
+
+	// ─── Calendar refresh: weekly Sunday ─────────
+	scheduledTasks.push(
+		cron.schedule(
+			"0 20 * * 0",
+			() => {
+				const config = loadConfig();
+				const db = getDb();
+				collectEconomicCalendar(db, config.FRED_API_KEY).catch((err) =>
+					log.error({ error: err instanceof Error ? err.message : String(err) }, "Calendar collection failed"),
+				);
+			},
+			{ timezone },
+		),
+	);
+
+	// ─── Prediction accuracy: 09:30 ET Mon-Fri ──
 	scheduledTasks.push(
 		cron.schedule(
 			"30 9 * * 1-5",
@@ -196,7 +283,7 @@ export function startScheduler(streamText: (prompt: string, model: string) => Pr
 		),
 	);
 
-	// Hourly risk check: L1 stop-loss + L4 BTC crash at :00 (before trade engine at :05)
+	// ─── Hourly: risk checks at :00 ─────────────
 	scheduledTasks.push(
 		cron.schedule(
 			"0 * * * *",
@@ -228,7 +315,7 @@ export function startScheduler(streamText: (prompt: string, model: string) => Pr
 		),
 	);
 
-	// Hourly BTC trade check at :05 (after risk check at :00)
+	// ─── Hourly: BTC trade at :05 ───────────────
 	scheduledTasks.push(
 		cron.schedule(
 			"5 * * * *",
@@ -247,18 +334,20 @@ export function startScheduler(streamText: (prompt: string, model: string) => Pr
 		),
 	);
 
-	// Sentiment + hourly prices collection every hour
+	// ─── Hourly: real-time data at :30 ──────────
+	// Hourly prices (Yahoo + Binance klines) + BTC derivatives + crypto on-chain
+	// F&G index, CoinMetrics, ETF volume — all daily data, collected once at :30
 	scheduledTasks.push(
 		cron.schedule(
-			"0 * * * *",
+			"30 * * * *",
 			() => {
 				const config = loadConfig();
 				const db = getDb();
-				collectSentiment(db, { fredApiKey: config.FRED_API_KEY }).catch((err) =>
-					log.error({ error: err instanceof Error ? err.message : String(err) }, "Sentiment collection failed"),
-				);
 				collectHourlyPrices(db).catch((err) =>
 					log.error({ error: err instanceof Error ? err.message : String(err) }, "Hourly price collection failed"),
+				);
+				collectSentiment(db, { fredApiKey: config.FRED_API_KEY }).catch((err) =>
+					log.error({ error: err instanceof Error ? err.message : String(err) }, "Sentiment collection failed"),
 				);
 			},
 			{ timezone },
