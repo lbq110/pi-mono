@@ -133,33 +133,85 @@ function computeInflationRegime(db: Db): InflationRegime {
 
 // ─── Sub-score builders ───────────────────────────
 
-function buildLiquidityScore(signal: string, weight: number): SubScore {
-	const map: Record<string, number> = { expanding: 1.0, neutral: 0.0, contracting: -1.0 };
-	const normalized = map[signal] ?? 0;
+// ─── Dimension: Liquidity Regime ──────────────────
+// Blends liquidity_signal (70%) + funding_stress (30%) into one dimension.
+// funding_stress.stress_score: 0=calm → +1, 100=crisis → −1
+
+/** Internal weight of liquidity_signal within the liquidity regime dimension */
+const LIQ_DIM_SIGNAL_WEIGHT = 0.7;
+/** Internal weight of funding_stress within the liquidity regime dimension */
+const LIQ_DIM_STRESS_WEIGHT = 0.3;
+
+function buildLiquidityDimensionScore(
+	liquiditySignal: string,
+	fundingStressScore: number | null,
+	weight: number,
+): SubScore {
+	const liqMap: Record<string, number> = { expanding: 1.0, neutral: 0.0, contracting: -1.0 };
+	const liqNorm = liqMap[liquiditySignal] ?? 0;
+
+	let normalized: number;
+	let note: string;
+
+	if (fundingStressScore !== null) {
+		// stress_score 0-100 → inverted: 0=calm=+1, 50=neutral=0, 100=crisis=-1
+		const fundingNorm = Math.max(-1, Math.min(1, (50 - fundingStressScore) / 50));
+		normalized = liqNorm * LIQ_DIM_SIGNAL_WEIGHT + fundingNorm * LIQ_DIM_STRESS_WEIGHT;
+		note = `liquidity=${liquiditySignal}(${(liqNorm * LIQ_DIM_SIGNAL_WEIGHT).toFixed(2)}) + funding_stress=${fundingStressScore.toFixed(0)}(${(fundingNorm * LIQ_DIM_STRESS_WEIGHT).toFixed(2)})`;
+	} else {
+		// No funding_stress data — fallback to liquidity_signal only
+		normalized = liqNorm;
+		note = `liquidity=${liquiditySignal} (no funding_stress data)`;
+	}
+
 	return {
 		rawValue: normalized,
 		normalized,
 		weight,
 		contribution: normalized * weight * 100,
-		note: `liquidity=${signal}`,
+		note,
 	};
 }
 
-function buildYieldCurveScore(signal: string, weight: number): SubScore {
-	const map: Record<string, number> = {
+// ─── Dimension: Rate Expectations ─────────────────
+// Blends yield_curve (70%) + auction_health (30%) into one dimension.
+// auction_health.aggregate_health: 0=stressed → −1, 50=neutral → 0, 100=healthy → +1
+
+/** Internal weight of yield_curve within the rate expectations dimension */
+const RATE_DIM_CURVE_WEIGHT = 0.7;
+/** Internal weight of auction_health within the rate expectations dimension */
+const RATE_DIM_AUCTION_WEIGHT = 0.3;
+
+function buildRateDimensionScore(curveSignal: string, auctionHealthScore: number | null, weight: number): SubScore {
+	const curveMap: Record<string, number> = {
 		bull_steepener: 0.8,
 		bull_flattener: 0.6,
 		neutral: 0.0,
 		bear_steepener: -0.5,
 		bear_flattener: -0.8,
 	};
-	const normalized = map[signal] ?? 0;
+	const curveNorm = curveMap[curveSignal] ?? 0;
+
+	let normalized: number;
+	let note: string;
+
+	if (auctionHealthScore !== null) {
+		// aggregate_health 0-100 → (health - 50) / 50 → [-1, +1]
+		const auctionNorm = Math.max(-1, Math.min(1, (auctionHealthScore - 50) / 50));
+		normalized = curveNorm * RATE_DIM_CURVE_WEIGHT + auctionNorm * RATE_DIM_AUCTION_WEIGHT;
+		note = `yield_curve=${curveSignal}(${(curveNorm * RATE_DIM_CURVE_WEIGHT).toFixed(2)}) + auction_health=${auctionHealthScore.toFixed(0)}(${(auctionNorm * RATE_DIM_AUCTION_WEIGHT).toFixed(2)})`;
+	} else {
+		// No auction_health data — fallback to yield_curve only
+		normalized = curveNorm;
+		note = `yield_curve=${curveSignal} (no auction_health data)`;
+	}
+
 	return {
 		rawValue: normalized,
 		normalized,
 		weight,
 		contribution: normalized * weight * 100,
-		note: `yield_curve=${signal}`,
+		note,
 	};
 }
 
@@ -491,7 +543,9 @@ function scoreEquity(
 	const w = weights[symbol];
 
 	const liquidityRow = analysis.get("liquidity_signal");
+	const fundingRow = analysis.get("funding_stress");
 	const curveRow = analysis.get("yield_curve");
+	const auctionRow = analysis.get("auction_health");
 	const sentimentRow = analysis.get("sentiment_signal");
 	const usdRow = analysis.get("usd_model");
 	const creditRow = analysis.get("credit_risk");
@@ -499,7 +553,11 @@ function scoreEquity(
 	const btcRow = analysis.get("btc_signal");
 
 	const liquiditySignal = liquidityRow?.signal ?? "neutral";
+	const fundingMeta = fundingRow?.metadata as { stress_score?: number } | undefined;
+	const fundingStressScore = fundingMeta?.stress_score ?? null;
 	const curveSignal = curveRow?.signal ?? "neutral";
+	const auctionMeta = auctionRow?.metadata as { aggregate_health?: number } | undefined;
+	const auctionHealthScore = auctionMeta?.aggregate_health ?? null;
 	const sentimentMeta = sentimentRow?.metadata as { composite_score?: number } | undefined;
 	const sentimentComposite = sentimentMeta?.composite_score ?? 50;
 	const usdMeta = usdRow?.metadata as UsdModelSignalMetadata | undefined;
@@ -509,9 +567,9 @@ function scoreEquity(
 	const btcMeta = btcRow?.metadata as { equity_score_modifier?: number } | undefined;
 	const btcEquityModifier = btcMeta?.equity_score_modifier ?? 0;
 
-	// Build sub-scores
-	const liq = buildLiquidityScore(liquiditySignal, w.liquidity);
-	const curve = buildYieldCurveScore(curveSignal, w.yieldCurve);
+	// Build dimension scores (blending correlated signals within each dimension)
+	const liq = buildLiquidityDimensionScore(liquiditySignal, fundingStressScore, w.liquidity);
+	const curve = buildRateDimensionScore(curveSignal, auctionHealthScore, w.yieldCurve);
 	const sent = buildSentimentScore(sentimentComposite, w.sentiment);
 	const usd = buildUsdModelScore(usdComposite, symbol, w.usdModel, usdMeta);
 
@@ -571,6 +629,7 @@ function scoreBtc(_db: Db, analysis: Map<string, AnalysisRow>, positionCap: numb
 	const corrRow = analysis.get("correlation_matrix");
 	const sentimentRow = analysis.get("sentiment_signal");
 	const liquidityRow = analysis.get("liquidity_signal");
+	const fundingRow = analysis.get("funding_stress");
 	const biasRow = analysis.get("market_bias");
 
 	const btcSignal = btcRow?.signal ?? "neutral";
@@ -578,6 +637,8 @@ function scoreBtc(_db: Db, analysis: Map<string, AnalysisRow>, positionCap: numb
 	const sentimentMeta = sentimentRow?.metadata as { composite_score?: number } | undefined;
 	const sentimentComposite = sentimentMeta?.composite_score ?? 50;
 	const liquiditySignal = liquidityRow?.signal ?? "neutral";
+	const fundingMeta = fundingRow?.metadata as { stress_score?: number } | undefined;
+	const fundingStressScore = fundingMeta?.stress_score ?? null;
 	const marketBiasSignal = biasRow?.signal ?? "neutral";
 	const corrMeta = corrRow?.metadata as CorrelationMatrixMetadata | undefined;
 
@@ -587,7 +648,7 @@ function scoreBtc(_db: Db, analysis: Map<string, AnalysisRow>, positionCap: numb
 	const btcSub = buildBtcSubScore(btcSignal, 0.45);
 	const corrSub = buildCorrRegimeScore(corrSignal, marketBiasSignal, 0.2);
 	const sentSub = buildSentimentScore(sentimentComposite, 0.2);
-	const liqSub = buildLiquidityScore(liquiditySignal, 0.15);
+	const liqSub = buildLiquidityDimensionScore(liquiditySignal, fundingStressScore, 0.15);
 
 	const baseScore = btcSub.contribution + corrSub.contribution + sentSub.contribution + liqSub.contribution;
 	const finalScore = baseScore; // no additional modifier for BTC
@@ -641,13 +702,19 @@ function scoreUup(
 ): InstrumentScore {
 	const usdRow = analysis.get("usd_model");
 	const liquidityRow = analysis.get("liquidity_signal");
+	const fundingRow = analysis.get("funding_stress");
 	const curveRow = analysis.get("yield_curve");
+	const auctionRow = analysis.get("auction_health");
 	const biasRow = analysis.get("market_bias");
 
 	const usdMeta = usdRow?.metadata as { composite_score?: number } | undefined;
 	const usdComposite = usdMeta?.composite_score ?? 50;
 	const liquiditySignal = liquidityRow?.signal ?? "neutral";
+	const fundingMeta = fundingRow?.metadata as { stress_score?: number } | undefined;
+	const fundingStressScore = fundingMeta?.stress_score ?? null;
 	const curveSignal = curveRow?.signal ?? "neutral";
+	const auctionMeta = auctionRow?.metadata as { aggregate_health?: number } | undefined;
+	const auctionHealthScore = auctionMeta?.aggregate_health ?? null;
 	const marketBiasSignal = biasRow?.signal ?? "neutral";
 
 	// Primary: USD model composite → normalized [-1, 1]
@@ -661,18 +728,28 @@ function scoreUup(
 		note: `usd_model_composite=${usdComposite.toFixed(1)}`,
 	};
 
-	// Liquidity: expanding = risk-on = weaker USD = short UUP
+	// Liquidity dimension (anti-corr DXY): expanding = risk-on = weaker USD = short UUP
+	// Funding stress also strengthens USD (flight to safety), so it reinforces the signal
 	const liqMap: Record<string, number> = { expanding: -0.5, neutral: 0, contracting: 0.5 };
-	const liqNorm = liqMap[liquiditySignal] ?? 0;
+	let liqNorm = liqMap[liquiditySignal] ?? 0;
+	let liqNote = `liquidity=${liquiditySignal}`;
+	if (fundingStressScore !== null) {
+		// Funding stress → USD strength → UUP positive. stress_score 0→0, 100→+0.5
+		const stressBoost = (fundingStressScore / 100) * 0.5 * LIQ_DIM_STRESS_WEIGHT;
+		liqNorm = liqNorm * LIQ_DIM_SIGNAL_WEIGHT + stressBoost;
+		liqNote += ` + funding_stress=${fundingStressScore.toFixed(0)}(boost=${stressBoost.toFixed(2)})`;
+	}
+	liqNote += " (anti-corr DXY)";
 	const liqSub: SubScore = {
 		rawValue: liqNorm,
 		normalized: liqNorm,
 		weight: 0.15,
 		contribution: liqNorm * 0.15 * 100,
-		note: `liquidity=${liquiditySignal} (anti-corr DXY)`,
+		note: liqNote,
 	};
 
-	// Yield curve: bear_steepener = higher rates = USD positive
+	// Rate expectations dimension (USD impact)
+	// bear_steepener = higher rates = USD positive; auction health confirms/weakens
 	const curveMap: Record<string, number> = {
 		bear_steepener: 0.4,
 		bear_flattener: 0.2,
@@ -680,13 +757,21 @@ function scoreUup(
 		bull_flattener: -0.2,
 		bull_steepener: -0.3,
 	};
-	const curveNorm = curveMap[curveSignal] ?? 0;
+	let curveNorm = curveMap[curveSignal] ?? 0;
+	let curveNote = `yield_curve=${curveSignal}`;
+	if (auctionHealthScore !== null) {
+		// Healthy auctions → confident rate path → mildly USD positive
+		const auctionNorm = Math.max(-1, Math.min(1, (auctionHealthScore - 50) / 50));
+		curveNorm = curveNorm * RATE_DIM_CURVE_WEIGHT + auctionNorm * 0.2 * RATE_DIM_AUCTION_WEIGHT;
+		curveNote += ` + auction=${auctionHealthScore.toFixed(0)}(${(auctionNorm * 0.2 * RATE_DIM_AUCTION_WEIGHT).toFixed(2)})`;
+	}
+	curveNote += " (USD impact)";
 	const curveSub: SubScore = {
 		rawValue: curveNorm,
 		normalized: curveNorm,
 		weight: 0.15,
 		contribution: curveNorm * 0.15 * 100,
-		note: `yield_curve=${curveSignal} (USD impact)`,
+		note: curveNote,
 	};
 
 	const baseScore = usdSub.contribution + liqSub.contribution + curveSub.contribution;
