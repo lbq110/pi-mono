@@ -374,13 +374,16 @@ export function startScheduler(streamText: (prompt: string, model: string) => Pr
 		),
 	);
 
-	// ─── Hourly: BTC trade at :05 ───────────────
+	// ─── Hourly: BTC-only trade at :05 ──────────
+	// IMPORTANT: Only execute BTC trades hourly. Equity/UUP trades happen
+	// once daily at 08:00 ET via the full pipeline. Running all instruments
+	// hourly caused rapid open/close churn during market hours.
 	scheduledTasks.push(
 		cron.schedule(
 			"5 * * * *",
 			() => {
 				const db = getDb();
-				runTradeEngine(db)
+				runTradeEngine(db, ["BTCUSD"])
 					.then((r) => log.info({ summary: r.summary }, "Hourly BTC trade check done"))
 					.catch((err) =>
 						log.error(

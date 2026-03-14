@@ -645,18 +645,23 @@ async function notifyPositionChanges(changes: PositionChange[]): Promise<void> {
 // ─── Main entry point ─────────────────────────────
 
 /**
- * Run the full trade cycle:
+ * Run the trade cycle for specified instruments (or all if no filter):
  * 1. Score all instruments from analysis_results
  * 2. Compare vs current Alpaca positions
- * 3. Execute necessary orders
+ * 3. Execute necessary orders (only for filtered symbols)
  * 4. Sync positions to local DB
  * 5. Return execution summary
+ *
+ * @param symbolFilter - If provided, only execute trades for these symbols.
+ *                       Other symbols will be scored but skipped for execution.
+ *                       Use ["BTCUSD"] for hourly BTC-only runs.
  */
-export async function runTradeEngine(db: Db): Promise<TradeExecutionResult> {
+export async function runTradeEngine(db: Db, symbolFilter?: TradedSymbol[]): Promise<TradeExecutionResult> {
 	const now = new Date().toISOString();
 	const date = now.split("T")[0];
+	const filterSet = symbolFilter ? new Set(symbolFilter) : null;
 
-	log.info({ date }, "Running trade engine");
+	log.info({ date, symbolFilter: symbolFilter ?? "all" }, "Running trade engine");
 
 	// Check market status
 	const client = getAlpacaClient();
@@ -679,14 +684,21 @@ export async function runTradeEngine(db: Db): Promise<TradeExecutionResult> {
 	// Get current positions
 	const currentPositions = await getCurrentPositions();
 
-	// Generate decisions
-	const decisions = makeDecisions({ SPY, QQQ, IWM, BTCUSD, UUP }, currentPositions);
+	// Generate decisions for all instruments
+	const allDecisions = makeDecisions({ SPY, QQQ, IWM, BTCUSD, UUP }, currentPositions);
 
-	// Execute orders
+	// Execute orders — only for filtered symbols
 	const orderOutcomes: OrderOutcome[] = [];
 	const skippedSymbols: string[] = [];
+	const executedDecisions: TradeDecision[] = [];
 
-	for (const decision of decisions) {
+	for (const decision of allDecisions) {
+		// Skip symbols not in filter
+		if (filterSet && !filterSet.has(decision.symbol as TradedSymbol)) {
+			continue;
+		}
+		executedDecisions.push(decision);
+
 		const outcome = await executeDecision(db, decision, marketOpen);
 		orderOutcomes.push(outcome);
 		if (outcome.status === "skipped") {
@@ -722,11 +734,12 @@ export async function runTradeEngine(db: Db): Promise<TradeExecutionResult> {
 
 	const submitted = orderOutcomes.filter((o) => o.status === "submitted").length;
 	const failed = orderOutcomes.filter((o) => o.status === "failed").length;
-	const summary = `${submitted} orders submitted, ${failed} failed, ${skippedSymbols.length} skipped. Bias=${allScores.marketBias}(${allScores.marketBiasConfidence}), Inflation=${allScores.inflationRegime.regime}, Risk=${allScores.riskLevel}`;
+	const filterLabel = filterSet ? `[${[...filterSet].join(",")}]` : "all";
+	const summary = `${filterLabel}: ${submitted} orders submitted, ${failed} failed, ${skippedSymbols.length} skipped. Bias=${allScores.marketBias}(${allScores.marketBiasConfidence}), Inflation=${allScores.inflationRegime.regime}, Risk=${allScores.riskLevel}`;
 
 	log.info({ submitted, failed, skipped: skippedSymbols.length, summary }, "Trade engine complete");
 
-	return { date, marketOpen, decisions, orders: orderOutcomes, skippedSymbols, summary };
+	return { date, marketOpen, decisions: executedDecisions, orders: orderOutcomes, skippedSymbols, summary };
 }
 
 /**
