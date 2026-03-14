@@ -1,7 +1,10 @@
+import { eq } from "drizzle-orm";
 import { getAlpacaClient } from "../broker/alpaca.js";
+import { loadConfig } from "../config.js";
 import type { Db } from "../db/client.js";
 import { orders, positions, tradeLog } from "../db/schema.js";
 import { createChildLogger } from "../logger.js";
+import { postToSlack } from "../notifications/slack.js";
 import { isInStopLossCooldown, updateDrawdownTier, updateHighWaterMarks } from "./risk-manager.js";
 import { scoreAllInstruments } from "./signal-scorer.js";
 import type { InstrumentScore, OrderOutcome, TradeDecision, TradedSymbol, TradeExecutionResult } from "./types.js";
@@ -440,42 +443,129 @@ async function executeDecision(db: Db, decision: TradeDecision, marketOpen: bool
 	};
 }
 
-/** Sync local positions table with Alpaca actuals */
-async function syncPositionsToDb(db: Db): Promise<void> {
+// ─── Position change tracking ─────────────────────
+
+interface PositionChange {
+	symbol: string;
+	changeType: "open" | "close" | "resize" | "flip";
+	prevDirection: string;
+	newDirection: string;
+	prevQty: number;
+	newQty: number;
+	avgCost: number;
+	currentPrice: number;
+	pnl: number;
+}
+
+/** Sync local positions table with Alpaca actuals, track changes, and set openedAt */
+async function syncPositionsToDb(db: Db): Promise<PositionChange[]> {
 	const client = getAlpacaClient();
 	const alpacaPositions = await client.getPositions();
 	const now = new Date().toISOString();
+	const changes: PositionChange[] = [];
 
 	for (const sym of ["SPY", "QQQ", "IWM", "BTCUSD", "UUP"] as TradedSymbol[]) {
 		const alpacaSym = ALPACA_SYMBOLS[sym];
 		const p = alpacaPositions.find((ap) => ap.symbol === alpacaSym);
 
+		// Read previous state
+		const prev = db.select().from(positions).where(eq(positions.symbol, sym)).all()[0];
+		const prevDirection = prev?.direction ?? "flat";
+		const prevQty = prev?.quantity ?? 0;
+
 		if (p) {
 			const direction: "long" | "short" = p.side === "short" ? "short" : "long";
+			const qty = Math.abs(Number.parseFloat(p.qty));
+			const avgCost = Number.parseFloat(p.avg_entry_price);
+			const currentPrice = Number.parseFloat(p.current_price);
+			const unrealizedPnl = Number.parseFloat(p.unrealized_pl);
+
+			// Determine if openedAt should be set/kept
+			let openedAt = prev?.openedAt ?? null;
+			if (prevDirection === "flat" || prevDirection !== direction) {
+				// New position or direction flip → set openedAt
+				openedAt = now;
+			}
+
 			db.insert(positions)
 				.values({
 					symbol: sym,
 					direction,
-					quantity: Math.abs(Number.parseFloat(p.qty)),
-					avgCost: Number.parseFloat(p.avg_entry_price),
-					currentPrice: Number.parseFloat(p.current_price),
-					unrealizedPnl: Number.parseFloat(p.unrealized_pl),
+					quantity: qty,
+					avgCost,
+					currentPrice,
+					unrealizedPnl,
+					openedAt,
 					updatedAt: now,
 				})
 				.onConflictDoUpdate({
 					target: [positions.symbol],
 					set: {
 						direction,
-						quantity: Math.abs(Number.parseFloat(p.qty)),
-						avgCost: Number.parseFloat(p.avg_entry_price),
-						currentPrice: Number.parseFloat(p.current_price),
-						unrealizedPnl: Number.parseFloat(p.unrealized_pl),
+						quantity: qty,
+						avgCost,
+						currentPrice,
+						unrealizedPnl,
+						openedAt,
 						updatedAt: now,
 					},
 				})
 				.run();
+
+			// Detect change type
+			if (prevDirection === "flat") {
+				changes.push({
+					symbol: sym,
+					changeType: "open",
+					prevDirection,
+					newDirection: direction,
+					prevQty,
+					newQty: qty,
+					avgCost,
+					currentPrice,
+					pnl: unrealizedPnl,
+				});
+			} else if (prevDirection !== direction) {
+				changes.push({
+					symbol: sym,
+					changeType: "flip",
+					prevDirection,
+					newDirection: direction,
+					prevQty,
+					newQty: qty,
+					avgCost,
+					currentPrice,
+					pnl: unrealizedPnl,
+				});
+			} else if (Math.abs(qty - prevQty) / Math.max(prevQty, 0.001) > 0.1) {
+				changes.push({
+					symbol: sym,
+					changeType: "resize",
+					prevDirection,
+					newDirection: direction,
+					prevQty,
+					newQty: qty,
+					avgCost,
+					currentPrice,
+					pnl: unrealizedPnl,
+				});
+			}
 		} else {
-			// Mark as flat
+			// Mark as flat, clear openedAt
+			if (prevDirection !== "flat") {
+				changes.push({
+					symbol: sym,
+					changeType: "close",
+					prevDirection,
+					newDirection: "flat",
+					prevQty,
+					newQty: 0,
+					avgCost: prev?.avgCost ?? 0,
+					currentPrice: prev?.currentPrice ?? 0,
+					pnl: prev?.unrealizedPnl ?? 0,
+				});
+			}
+
 			db.insert(positions)
 				.values({
 					symbol: sym,
@@ -484,14 +574,71 @@ async function syncPositionsToDb(db: Db): Promise<void> {
 					avgCost: 0,
 					currentPrice: 0,
 					unrealizedPnl: 0,
+					openedAt: null,
 					updatedAt: now,
 				})
 				.onConflictDoUpdate({
 					target: [positions.symbol],
-					set: { direction: "flat", quantity: 0, currentPrice: 0, unrealizedPnl: 0, updatedAt: now },
+					set: {
+						direction: "flat",
+						quantity: 0,
+						currentPrice: 0,
+						unrealizedPnl: 0,
+						openedAt: null,
+						updatedAt: now,
+					},
 				})
 				.run();
 		}
+	}
+
+	return changes;
+}
+
+/** Send Slack notification for position changes */
+async function notifyPositionChanges(changes: PositionChange[]): Promise<void> {
+	if (changes.length === 0) return;
+
+	const config = loadConfig();
+	if (!config.SLACK_BOT_TOKEN || !config.SLACK_CHANNEL_ID) return;
+
+	const lines: string[] = ["*仓位变动通知*\n"];
+	for (const c of changes) {
+		const icon =
+			c.changeType === "open" ? "🟢" : c.changeType === "close" ? "🔴" : c.changeType === "flip" ? "🔄" : "📐";
+		const label =
+			c.changeType === "open"
+				? "建仓"
+				: c.changeType === "close"
+					? "平仓"
+					: c.changeType === "flip"
+						? "翻转"
+						: "调仓";
+
+		let detail: string;
+		if (c.changeType === "open") {
+			detail = `${c.newDirection} ${c.newQty.toFixed(4)} @ $${c.avgCost.toFixed(2)}`;
+		} else if (c.changeType === "close") {
+			detail = `${c.prevDirection} ${c.prevQty.toFixed(4)} → flat, PnL $${c.pnl.toFixed(2)}`;
+		} else if (c.changeType === "flip") {
+			detail = `${c.prevDirection} → ${c.newDirection} ${c.newQty.toFixed(4)} @ $${c.avgCost.toFixed(2)}`;
+		} else {
+			const qtyChange = c.newQty - c.prevQty;
+			detail = `${c.newDirection} ${c.prevQty.toFixed(4)} → ${c.newQty.toFixed(4)} (${qtyChange >= 0 ? "+" : ""}${qtyChange.toFixed(4)})`;
+		}
+
+		lines.push(`${icon} *${c.symbol}* ${label}: ${detail}`);
+	}
+
+	const msg = lines.join("\n");
+	try {
+		await postToSlack(msg, { botToken: config.SLACK_BOT_TOKEN, channelId: config.SLACK_CHANNEL_ID });
+		log.info({ changes: changes.length }, "Position change notification sent to Slack");
+	} catch (err) {
+		log.error(
+			{ error: err instanceof Error ? err.message : String(err) },
+			"Failed to send position change notification",
+		);
 	}
 }
 
@@ -547,8 +694,16 @@ export async function runTradeEngine(db: Db): Promise<TradeExecutionResult> {
 		}
 	}
 
-	// Sync positions table
-	await syncPositionsToDb(db);
+	// Sync positions table and detect changes
+	const positionChanges = await syncPositionsToDb(db);
+
+	// Notify position changes via Slack
+	if (positionChanges.length > 0) {
+		log.info({ changes: positionChanges.map((c) => `${c.symbol}:${c.changeType}`) }, "Position changes detected");
+		notifyPositionChanges(positionChanges).catch((err) =>
+			log.error({ error: err instanceof Error ? err.message : String(err) }, "Position change notification failed"),
+		);
+	}
 
 	// Update trailing stop high water marks
 	updateHighWaterMarks(db);

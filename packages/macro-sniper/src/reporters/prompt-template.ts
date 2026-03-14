@@ -6,6 +6,7 @@ export interface PositionSummary {
 	currentPrice: number;
 	unrealizedPnl: number;
 	pnlPct: number;
+	openedAt: string | null; // ISO timestamp when position was opened
 }
 
 export interface ScoreSummary {
@@ -66,10 +67,10 @@ export function buildDailyReportPrompt(ctx: ReportContext): string {
 	const positionsSection =
 		ctx.positions && ctx.positions.length > 0
 			? ctx.positions
-					.map(
-						(p) =>
-							`  ${p.symbol}: ${p.direction} ${p.quantity}股 @ $${p.avgCost.toFixed(2)}, 现价 $${p.currentPrice.toFixed(2)}, PnL $${p.unrealizedPnl.toFixed(2)} (${(p.pnlPct * 100).toFixed(2)}%)`,
-					)
+					.map((p) => {
+						const openDate = p.openedAt ? p.openedAt.split("T")[0] : "未知";
+						return `  ${p.symbol}: ${p.direction} ${p.quantity}股 @ $${p.avgCost.toFixed(2)}, 现价 $${p.currentPrice.toFixed(2)}, PnL $${p.unrealizedPnl.toFixed(2)} (${(p.pnlPct * 100).toFixed(2)}%), 建仓日期 ${openDate}`;
+					})
 					.join("\n")
 			: "暂无持仓";
 
@@ -190,7 +191,7 @@ ${riskSection}
    *   **关注要点**：基于上述分析给出1-2个关键关注点
 
 8. **📦 持仓回顾** — 必须包含以下小标题：
-   *   **当前持仓**：列出所有持仓标的、方向、数量、成本价、现价、未实现盈亏（金额+百分比）
+   *   **当前持仓**：列出所有持仓标的、方向、数量、成本价、现价、未实现盈亏（金额+百分比）、**建仓日期**（从数据中的"建仓日期"字段获取）
    *   **持仓变化**：相比上次日报，哪些标的新开仓/加仓/减仓/平仓
    *   **风控状态**：当前风控等级（normal/caution/warning/halt）、组合回撤、风控乘数
    *   若无持仓则简述"当前空仓"及原因

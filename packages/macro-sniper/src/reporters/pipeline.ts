@@ -52,6 +52,7 @@ export async function generateDailyReport(
 			currentPrice: p.currentPrice,
 			unrealizedPnl: p.unrealizedPnl,
 			pnlPct: p.avgCost > 0 ? p.unrealizedPnl / (p.avgCost * p.quantity) : 0,
+			openedAt: p.openedAt,
 		}));
 
 	// Load scores for §10
