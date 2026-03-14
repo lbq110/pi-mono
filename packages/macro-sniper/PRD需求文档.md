@@ -19,13 +19,14 @@
 | **日报生成** | ✅ Phase 1 | LLM（claude-opus-4-6）生成 12 章节日报，Slack 推送 |
 | **BTC 4 支柱信号** | ✅ Phase 3 | 技术(35%) + 衍生品(40%) + 链上(15%) + ETF(10%) |
 | **相关性矩阵** | ✅ Phase 3 | 5×5 Pearson 相关性，7d hourly + 30d daily，体制判断 |
-| **信号评分器** | ✅ Phase 3 | 加权求和 [-100,100]，DXY 差异化，曲线×通胀轮动矩阵 |
+| **信号评分器** | ✅ Phase 3+v1.2 | 6 维度加权求和 [-100,100]，维度内信号合并，DXY 差异化 |
 | **交易引擎** | ✅ Phase 3 | score→decision→Alpaca 执行，多空双向（UUP） |
 | **风险管理** | ✅ Phase 3 | L1-L5 五层风控，ATR 移动止损，回撤分级，BTC 联动 |
 | **准确性追踪** | ✅ Phase 3 | T+1/T+5/T+10 多时间窗口，7 维度评估，利润因子 |
 | **宏观事件日历** | ✅ Phase 3 | 12 项 FRED 经济指标采集，事件日仓位减码 |
 | **国债拍卖监控** | ✅ v1.1 | 7 期限拍卖健康度，tail/through 偏差，期限溢价信号 |
 | **SRF / 资金压力** | ✅ v1.1 | SRF 用量 + SOFR-IORB 利差 + SOFR99 尾部三支柱评分 |
+| **因子正交化分析** | ✅ v1.2 | 6 维度分类 + 结构/统计冗余检测 + 空白区域发现 |
 
 ### 待实现模块
 
@@ -59,22 +60,20 @@ packages/macro-sniper/
 │   │   ├── migrate.ts               # 迁移脚本（runMigrations / runMigrationsOnDb）
 │   │   └── client.ts                # DB 连接单例
 │   │
-│   ├── collectors/                  # 数据采集
-│   │   ├── index.ts
-│   │   ├── fred.ts                  # FRED API 客户端（缓存 + 重试）
-│   │   ├── liquidity.ts             # 流动性采集（WALCL/WTREGEN/RRPONTSYD/SOFR/IORB/SOFR99）
-│   │   ├── bonds.ts                 # 债市收益率（DGS2/3/5/7/10/20/30）+ 信用利差
-│   │   ├── sentiment.ts             # 情绪综合采集（VIX/MOVE/恐惧贪婪/BTC 衍生品/链上/ETF）
-│   │   ├── fx.ts                    # 外汇汇率采集（DXY + 9 对主要货币）
+│   ├── collectors/                  # 数据采集（按领域组织）
+│   │   ├── index.ts                 # barrel re-export
+│   │   ├── liquidity.ts             # 流动性采集（WALCL/TGA/RRP/SOFR/IORB/SOFR99 + SRF 用量）
+│   │   ├── bonds.ts                 # 债市（DGS2/3/5/7/10/20/30 + 信用利差 + 国债拍卖）
+│   │   ├── sentiment.ts             # 情绪（VIX/MOVE/恐惧贪婪/BTC 衍生品/链上/ETF）
+│   │   ├── fx.ts                    # 外汇汇率（DXY + 9 对主要货币）
 │   │   ├── usd-model.ts            # USD 模型专用数据（期限溢价/BEI/央行利率）
-│   │   ├── cftc.ts                  # CFTC COT 持仓数据（Legacy + TFF 报告）
 │   │   ├── hourly.ts               # 小时线 OHLCV（SPY/QQQ/IWM/DXY/UUP/BTC）
-│   │   ├── yahoo.ts                # Yahoo Finance 客户端
-│   │   ├── binance.ts              # Binance 公共 API（BTC 价格/OI/funding/小时线/VWAP）
-│   │   ├── coinmetrics.ts          # CoinMetrics Community API（MVRV/链上数据）
 │   │   ├── macro-events.ts         # 12 项 FRED 宏观指标采集 + 经济日历
-│   │   ├── treasury-auctions.ts    # 国债拍卖数据（Treasury Fiscal Data API）
-│   │   └── srf.ts                  # SRF 用量（NY Fed Markets API）
+│   │   ├── fred.ts                  # FRED API 客户端（缓存 + 重试）
+│   │   ├── yahoo.ts                # Yahoo Finance 客户端
+│   │   ├── binance.ts              # Binance 公共 API（BTC 价格/OI/funding/VWAP）
+│   │   ├── coinmetrics.ts          # CoinMetrics Community API（MVRV/链上数据）
+│   │   └── cftc.ts                  # CFTC COT 持仓数据（Legacy + TFF 报告）
 │   │
 │   ├── analyzers/                   # 分析引擎
 │   │   ├── index.ts
@@ -89,6 +88,7 @@ packages/macro-sniper/
 │   │   ├── atr.ts                  # ATR 计算（14d hourly bars）
 │   │   ├── auction-health.ts       # 国债拍卖健康度 + tail 偏差 + 期限溢价
 │   │   ├── funding-stress.ts       # 资金压力（SRF + SOFR-IORB + SOFR99 尾部）
+│   │   ├── factor-analysis.ts      # 因子正交化分析 + 维度分类 + 空白区域发现
 │   │   └── rolling.ts              # 滚动计算工具（7d 变化、20d 均线）
 │   │
 │   ├── reporters/                   # 报表生成
@@ -155,6 +155,27 @@ executors  → 读 analysis_results → 评分 → Alpaca 执行 → 写 positio
 risk-mgr   → 读 Alpaca positions → 止损判断 → 写 risk_events → DB
 notifications → 读 generated_reports → Slack 推送
 ```
+
+### Collectors 组织原则
+
+Collectors 按**领域**组织，每个领域文件负责一个业务域的数据写入：
+
+| 类型 | 文件 | 职责 |
+|------|------|------|
+| **领域文件** | `liquidity.ts` | 流动性（FRED 6 series + SRF 用量） |
+| | `bonds.ts` | 债市（收益率 DGS* + 信用利差 + 国债拍卖） |
+| | `sentiment.ts` | 情绪（VIX/MOVE/F&G + BTC 衍生品/链上/ETF） |
+| | `fx.ts` | 外汇汇率 |
+| | `usd-model.ts` | USD 模型专用数据 |
+| | `hourly.ts` | 小时线 OHLCV |
+| | `macro-events.ts` | 宏观事件日历 |
+| **API 客户端** | `fred.ts` | FRED API 工具（缓存 + 重试） |
+| | `yahoo.ts` | Yahoo Finance 工具 |
+| | `binance.ts` | Binance 公共 API 工具 |
+| | `coinmetrics.ts` | CoinMetrics Community API 工具 |
+| | `cftc.ts` | CFTC COT CSV 工具 |
+
+领域文件可调用多个 API 客户端（如 `bonds.ts` 调 `fred.ts` + `yahoo.ts` + Treasury API），但每个领域文件只负责一个业务域。所有导出通过 `index.ts` 统一暴露。
 
 ### 数据库 Schema（21 张表）
 
@@ -390,6 +411,63 @@ SOFR-IORB > 5bps → `funding_tight: true`。
 - 高影响事件日（CPI/NFP/FOMC 等）：SPY/QQQ/IWM × 0.7
 - BTC 和 UUP 不受影响（对 CPI/NFP 敏感度较低）
 
+### 11. 因子正交化分析（✅ v1.2 已实现）
+
+**问题：** 10 个分析信号并非完全独立。`liquidity_signal` 和 `funding_stress` 共享 SOFR/IORB/SOFR99 输入；`yield_curve` 和 `auction_health` 共享 DGS 收益率数据。如果在评分器中给相关信号各自分配独立权重，等于同一个信息投了两票。
+
+**解决方案：6 个独立因子维度 + 2 个元因子**
+
+| 维度 | 回答的问题 | 包含信号 | 维度内混合权重 |
+|------|----------|---------|--------------|
+| **流动性体制** | 钱是在变多还是变少？ | `liquidity_signal`(70%) + `funding_stress`(30%) | 共享一个评分权重槽 |
+| **利率预期** | 市场认为利率往哪走？ | `yield_curve`(70%) + `auction_health`(30%) | 共享一个评分权重槽 |
+| **信用条件** | 信用风险是否在被重新定价？ | `credit_risk` | 独立（乘数模式） |
+| **风险偏好** | 市场愿意承担多少风险？ | `sentiment_signal` | 独立 |
+| **美元体制** | 美元在走强还是走弱？ | `usd_model` | 独立 |
+| **BTC 微观结构** | BTC 自身的供需如何？ | `btc_signal` | 独立 |
+
+| 元因子 | 作用 | 信号 |
+|--------|------|------|
+| **跨资产结构** | 资产关系变化，影响因子传导路径 | `correlation_matrix` |
+| **市场复合** | 所有因子加权合成 | `market_bias` |
+
+**维度合并在评分器层实现：** 10 个分析器继续独立运行并写入 DB，评分器在读取信号后先将同一维度的多个信号合成为一个维度分数，再参与跨维度加权。
+
+**流动性维度合并公式：**
+```
+liq_norm = {expanding: +1, neutral: 0, contracting: -1}
+funding_norm = (50 - stress_score) / 50    // 0=calm → +1, 100=crisis → -1
+liquidity_regime = liq_norm × 0.7 + funding_norm × 0.3
+```
+
+**利率维度合并公式：**
+```
+curve_norm = {bull_steepener: +0.8, ..., bear_flattener: -0.8}
+auction_norm = (aggregate_health - 50) / 50    // 0=stressed → -1, 100=healthy → +1
+rate_expectations = curve_norm × 0.7 + auction_norm × 0.3
+```
+
+**冗余检测工具（CLI `factors redundancy`）：**
+- 结构冗余：识别各维度共享的原始数据输入
+- 信号相关性：分类信号 → 数值 [-1,+1]，计算 Pearson r
+- 连续指标相关性：metadata 中的 composite_score / spread / stress_score 等
+- 判定标准：|r| > 0.7 高度冗余应合并，0.4-0.7 中度相关降权，< 0.4 独立
+
+**因子空白区域发现（CLI `factors gaps`）：**
+
+按"信息类型 × 时间尺度"矩阵扫描已实现和可加入的因子：
+
+| 类别 | 已实现 | 可加入（简单） | 可加入（中等） |
+|------|--------|-------------|--------------|
+| 均值回归 | MVRV | RSI(14)、布林带 | — |
+| 动量 | 净流动性趋势、MA7d | 多资产相对强弱 | — |
+| 结构性 | SRF+SOFR、拍卖 | VIX 期限结构 | Put/Call 比率 |
+| 跨资产 | BTC-SPX 相关性 | GLD/TLT 比率 | — |
+| 日历/季节 | 事件日减仓 | — | 月末效应、季末效应 |
+| 微观结构 | — | — | Order flow（受限） |
+
+空白区域提醒每 3 天自动通过 Slack 推送。
+
 ---
 
 ## 四、交易执行系统（Phase 3）
@@ -410,14 +488,16 @@ SOFR-IORB > 5bps → `funding_tight: true`。
 
 **加权求和模型** → finalScore ∈ [-100, 100]
 
-**权益标的权重（SPY/QQQ/IWM）：**
+**维度合并（v1.2）：** 评分器在加权之前先将同一维度的信号合并为维度分数（详见 §11 因子正交化分析）。权重槽中的"流动性"实际是 liquidity_signal(70%) + funding_stress(30%) 的合成值，"收益率曲线"实际是 yield_curve(70%) + auction_health(30%) 的合成值。
 
-| 信号 | QQQ | SPY | IWM |
+**权益标的维度权重（SPY/QQQ/IWM）：**
+
+| 维度 | QQQ | SPY | IWM |
 |------|-----|-----|-----|
-| 流动性 | 0.30 | 0.35 | 0.35 |
-| 收益率曲线 | 0.20 | 0.25 | 0.30 |
-| 情绪（逆向） | 0.20 | 0.20 | 0.20 |
-| USD 模型 | 0.30 | 0.20 | 0.15 |
+| 流动性体制 | 0.30 | 0.35 | 0.35 |
+| 利率预期 | 0.20 | 0.25 | 0.30 |
+| 风险偏好（逆向） | 0.20 | 0.20 | 0.20 |
+| 美元体制 | 0.30 | 0.20 | 0.15 |
 
 **DXY 敏感度系数：** QQQ=1.0 > SPY=0.6 > BTCUSD=0.5 > IWM=0.2
 
@@ -448,9 +528,9 @@ equityImpact   = adjustedImpact × DXY敏感度系数
 - 通胀判定：T10YIE > 2.5% 或 (GLD 5d >+2% 且 20d >+5%) → hot；<2.0% 或两者为负 → cool；else warm
 - 加分示例：bull_steepener + cool → IWM +15pt，QQQ +5pt
 
-**BTC 权重：** btc_signal=0.45，corr_regime=0.20，sentiment=0.20，liquidity=0.15
+**BTC 维度权重：** btc_microstructure=0.45，corr_regime=0.20，risk_appetite=0.20，liquidity_regime=0.15
 
-**UUP 权重：** usd_model=0.70，liquidity_anti_corr=0.15，yield_curve=0.15
+**UUP 维度权重：** usd_regime=0.70，liquidity_regime(反向)=0.15，rate_expectations=0.15
 
 ### 仓位阈值
 
@@ -527,6 +607,8 @@ equityImpact   = adjustedImpact × DXY敏感度系数
 - BTC 和 UUP 不受影响
 
 **5 层仓位调整 Pipeline：** correlation → ATR → drawdown → Kelly → event-day
+
+> 评分器在进入 5 层 Pipeline 之前，先将 10 个分析信号合并为 6 个独立维度分数（v1.2）。
 
 **相关性惩罚：** 30d daily corr > 0.85 的权益对 → 双方 ×0.7
 
@@ -608,6 +690,7 @@ equityImpact   = adjustedImpact × DXY敏感度系数
 | `0 17 * * 1-5` | 17:00 周一~五 | 流动性（TGA/RRP 日频 + WALCL 周频）+ SRF 用量 |
 | `0 18 * * 1-5` | 18:00 周一~五 | 收益率 + 信用利差 |
 | `0 20 * * 0` | 20:00 周日 | 经济日历刷新 |
+| `0 9 */3 * *` | 09:00 每 3 天 | 因子空白区域提醒（Slack 推送） |
 | `0 * * * *` | 每小时 :00 | L1 止损检查 + L4 BTC 急跌检查 |
 | `5 * * * *` | 每小时 :05 | BTC 交易引擎 |
 | `30 * * * *` | 每小时 :30 | 情绪 + 小时线采集（含 BTC VWAP） |
@@ -674,6 +757,11 @@ macro-sniper accuracy snapshot     # 手动创建预测快照
 macro-sniper portfolio status      # 账户 + 持仓
 macro-sniper portfolio orders      # 最近订单
 macro-sniper portfolio reset       # 平仓 + 取消全部订单
+
+# ─── 因子分析 ──────────────────────────────────────
+macro-sniper factors dimensions    # 6 维度 + 2 元因子分类
+macro-sniper factors redundancy    # 结构/统计冗余分析（相关性矩阵）
+macro-sniper factors gaps          # 因子空白区域 + 建议
 
 # ─── 系统 ──────────────────────────────────────────
 macro-sniper jobs start            # 前台启动 cron 调度
@@ -797,6 +885,13 @@ LLM_TEMPERATURE=0.1
 - 国债拍卖监控：7 期限拍卖健康度 + tail/through 偏差 + 期限溢价信号（commit `62779b8d`, `cd2016b4`）
 - SRF 资金压力：SRF 用量 + SOFR-IORB 利差 + SOFR99 尾部三支柱评分（commit `735c76ba`）
 - 收益率序列补齐：DGS3/DGS5/DGS7 + SOFR99
+
+### v1.2 已完成
+- Collectors 按领域重组：SRF 合入 `liquidity.ts`，国债拍卖合入 `bonds.ts`（commit `b16c5e74`）
+- 因子正交化分析工具：维度分类 + 结构/统计冗余检测 + 空白区域发现（commit `e5ce3839`）
+- 信号评分器维度合并：liquidity_signal+funding_stress → 流动性体制维度；yield_curve+auction_health → 利率预期维度（commit `441f2775`）
+- 新 CLI 命令：`factors dimensions`、`factors redundancy`、`factors gaps`
+- 每 3 天自动 Slack 推送因子空白区域提醒
 
 ### Phase 2（待启动）
 - 前端 Web 看板
