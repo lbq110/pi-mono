@@ -13,6 +13,7 @@ import {
 	macroEvents,
 	orders,
 	positions,
+	positionTrades,
 	predictionResults,
 	predictionSnapshots,
 	riskEvents,
@@ -419,6 +420,39 @@ export function runMigrationsOnDb(db: Db): void {
 	} catch {
 		// may fail if duplicates already exist — clean up first
 	}
+
+	// ─── Position Trades (unified trade history) ──
+
+	db.run(sql`
+		CREATE TABLE IF NOT EXISTS ${positionTrades} (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			symbol TEXT NOT NULL,
+			operation_type TEXT NOT NULL,
+			side TEXT NOT NULL,
+			direction TEXT NOT NULL,
+			quantity REAL NOT NULL,
+			price REAL NOT NULL,
+			notional REAL NOT NULL,
+			prev_direction TEXT NOT NULL,
+			prev_quantity REAL NOT NULL DEFAULT 0,
+			prev_avg_cost REAL NOT NULL DEFAULT 0,
+			new_quantity REAL NOT NULL DEFAULT 0,
+			new_avg_cost REAL NOT NULL DEFAULT 0,
+			realized_pnl REAL,
+			realized_pnl_pct REAL,
+			holding_duration INTEGER,
+			trigger TEXT NOT NULL,
+			signal_score REAL,
+			signal_snapshot TEXT,
+			trade_group TEXT,
+			alpaca_order_id TEXT,
+			created_at TEXT NOT NULL
+		)
+	`);
+
+	db.run(sql`CREATE INDEX IF NOT EXISTS idx_pos_trades_symbol ON position_trades(symbol, created_at)`);
+	db.run(sql`CREATE INDEX IF NOT EXISTS idx_pos_trades_type ON position_trades(operation_type, created_at)`);
+	db.run(sql`CREATE INDEX IF NOT EXISTS idx_pos_trades_group ON position_trades(trade_group)`);
 }
 
 /**

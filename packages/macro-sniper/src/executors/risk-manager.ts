@@ -6,6 +6,7 @@ import type { Db } from "../db/client.js";
 import { hourlyPrices, positions, riskEvents, riskState } from "../db/schema.js";
 import { createChildLogger } from "../logger.js";
 import { postToSlack } from "../notifications/slack.js";
+import { recordPositionTrade } from "./trade-engine.js";
 
 const log = createChildLogger("executor");
 
@@ -283,11 +284,36 @@ export async function checkStopLoss(db: Db): Promise<StopLossResult> {
 				})
 				.run();
 
+			// Get openedAt before resetting
+			const localPosRow = db.select().from(positions).where(eq(positions.symbol, symbol)).limit(1).all();
+			const prevOpenedAt = localPosRow[0]?.openedAt ?? null;
+			const prevAvgCost = localPosRow[0]?.avgCost ?? avgEntry;
+
 			// Reset HWM in positions table
 			db.update(positions)
-				.set({ highWaterMark: null, direction: "flat", quantity: 0 })
+				.set({ highWaterMark: null, direction: "flat", quantity: 0, openedAt: null })
 				.where(eq(positions.symbol, symbol))
 				.run();
+
+			// Record in position_trades
+			recordPositionTrade(db, {
+				change: {
+					symbol,
+					changeType: "close",
+					prevDirection: direction,
+					newDirection: "flat",
+					prevQty: qty,
+					newQty: 0,
+					prevAvgCost,
+					avgCost: 0,
+					currentPrice: filledPrice,
+					pnl: pnlAbs,
+					openedAt: prevOpenedAt,
+				},
+				trigger: "stop_loss",
+				signalScore: null,
+				signalSnapshot: { method, stopPrice, hwm, atr: atrAbsolute, pnlPct },
+			});
 
 			log.info({ symbol, method, filledPrice, cooldownUntil }, "L1 trailing stop executed");
 
@@ -610,6 +636,30 @@ export async function checkBtcCrashLinkage(db: Db): Promise<BtcCrashResult> {
 		try {
 			await client.placeMarketOrder(sym, "sell", undefined, reduceQty);
 			log.info({ symbol: sym, oldQty: currentQty, reducedBy: reduceQty, newQty: targetQty }, "L4 equity reduced");
+
+			// Record in position_trades
+			const localPos = db.select().from(positions).where(eq(positions.symbol, sym)).limit(1).all();
+			const avgCostLocal = localPos[0]?.avgCost ?? Number.parseFloat(pos.avg_entry_price);
+			const currentPriceLocal = Number.parseFloat(pos.current_price);
+			recordPositionTrade(db, {
+				change: {
+					symbol: sym,
+					changeType: "resize",
+					prevDirection: "long",
+					newDirection: "long",
+					prevQty: currentQty,
+					newQty: targetQty,
+					prevAvgCost: avgCostLocal,
+					avgCost: avgCostLocal,
+					currentPrice: currentPriceLocal,
+					pnl: 0,
+					openedAt: localPos[0]?.openedAt ?? null,
+				},
+				trigger: "btc_crash",
+				signalScore: null,
+				signalSnapshot: { btcReturn24h: btcReturn, threshold: BTC_CRASH_THRESHOLD },
+			});
+
 			result.reductions.push({ symbol: sym, oldQty: currentQty, newQty: targetQty });
 		} catch (err) {
 			const msg = err instanceof Error ? err.message : String(err);

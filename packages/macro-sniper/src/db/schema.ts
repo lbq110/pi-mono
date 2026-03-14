@@ -260,6 +260,44 @@ export const macroCalendar = sqliteTable("macro_calendar", {
 	fetchedAt: text("fetched_at").notNull(),
 });
 
+// ─── Position Trades (unified trade history) ─────
+
+export const positionTrades = sqliteTable("position_trades", {
+	id: integer("id").primaryKey({ autoIncrement: true }),
+	symbol: text("symbol").notNull(), // SPY, QQQ, IWM, BTCUSD, UUP
+	operationType: text("operation_type").notNull(), // open, close, add, reduce, flip, stop_loss, btc_crash
+	side: text("side").notNull(), // buy, sell
+	direction: text("direction").notNull(), // direction AFTER trade: long, short, flat
+	quantity: real("quantity").notNull(), // trade quantity
+	price: real("price").notNull(), // execution price
+	notional: real("notional").notNull(), // price × quantity
+
+	// Position state before/after
+	prevDirection: text("prev_direction").notNull(), // flat, long, short
+	prevQuantity: real("prev_quantity").notNull().default(0),
+	prevAvgCost: real("prev_avg_cost").notNull().default(0),
+	newQuantity: real("new_quantity").notNull().default(0),
+	newAvgCost: real("new_avg_cost").notNull().default(0),
+
+	// PnL (only for close/reduce/flip/stop_loss/btc_crash)
+	realizedPnl: real("realized_pnl"),
+	realizedPnlPct: real("realized_pnl_pct"), // as fraction (e.g. -0.05 = -5%)
+	holdingDuration: integer("holding_duration"), // seconds, computed at write time
+
+	// Trigger
+	trigger: text("trigger").notNull(), // daily_pipeline, hourly_btc, stop_loss, btc_crash, manual
+	signalScore: real("signal_score"), // composite score at trigger time
+	signalSnapshot: text("signal_snapshot", { mode: "json" }), // full evidence JSON
+
+	// Group (flip = close + open share same tradeGroup)
+	tradeGroup: text("trade_group"), // UUID, links related operations
+
+	// Broker
+	alpacaOrderId: text("alpaca_order_id"),
+
+	createdAt: text("created_at").notNull(),
+});
+
 // ─── Job Runs (written by job scheduler) ─────────
 
 export const jobRuns = sqliteTable("job_runs", {

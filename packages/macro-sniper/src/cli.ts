@@ -29,7 +29,7 @@ import {
 import { loadConfig } from "./config.js";
 import { closeDb, getDb } from "./db/client.js";
 import { runMigrations } from "./db/migrate.js";
-import { analysisResults, generatedReports } from "./db/schema.js";
+import { analysisResults, generatedReports, positionTrades as positionTradesTable } from "./db/schema.js";
 import {
 	checkPendingPredictions,
 	createPredictionSnapshot,
@@ -987,6 +987,103 @@ trade
 				);
 			}
 		}
+		closeDb();
+	});
+
+trade
+	.command("history")
+	.description("Show position trade history")
+	.option("-n, --limit <n>", "Number of records", "50")
+	.option("-s, --symbol <sym>", "Filter by symbol")
+	.action(async (opts) => {
+		const db = initDb();
+
+		const rows = opts.symbol
+			? db
+					.select()
+					.from(positionTradesTable)
+					.where(eq(positionTradesTable.symbol, opts.symbol.toUpperCase()))
+					.orderBy(desc(positionTradesTable.createdAt))
+					.limit(Number(opts.limit))
+					.all()
+			: db
+					.select()
+					.from(positionTradesTable)
+					.orderBy(desc(positionTradesTable.createdAt))
+					.limit(Number(opts.limit))
+					.all();
+
+		if (rows.length === 0) {
+			console.log("  无交易记录。");
+			closeDb();
+			return;
+		}
+
+		// Reverse to show chronological order
+		rows.reverse();
+
+		console.log("\n══ 仓位交易记录 ══\n");
+
+		const opIcons: Record<string, string> = {
+			open: "🟢",
+			close: "🔴",
+			add: "📈",
+			reduce: "📉",
+			flip: "🔄",
+			stop_loss: "🚨",
+			btc_crash: "⚠️",
+		};
+
+		const opLabels: Record<string, string> = {
+			open: "建仓",
+			close: "平仓",
+			add: "加仓",
+			reduce: "减仓",
+			flip: "翻转",
+			stop_loss: "止损",
+			btc_crash: "BTC联动减仓",
+		};
+
+		let lastDay = "";
+		for (const r of rows) {
+			const day = r.createdAt.substring(0, 10);
+			const time = r.createdAt.substring(11, 19);
+			if (day !== lastDay) {
+				console.log(`  ── ${day} ──`);
+				lastDay = day;
+			}
+
+			const icon = opIcons[r.operationType] ?? "•";
+			const label = opLabels[r.operationType] ?? r.operationType;
+
+			let pnlStr = "";
+			if (r.realizedPnl !== null && r.realizedPnl !== undefined) {
+				const sign = r.realizedPnl >= 0 ? "+" : "";
+				const pct = r.realizedPnlPct !== null ? ` (${sign}${(r.realizedPnlPct * 100).toFixed(2)}%)` : "";
+				pnlStr = `  PnL=${sign}$${r.realizedPnl.toFixed(2)}${pct}`;
+			}
+
+			let holdStr = "";
+			if (r.holdingDuration !== null && r.holdingDuration > 0) {
+				const hours = r.holdingDuration / 3600;
+				holdStr = hours >= 24 ? `  持仓${(hours / 24).toFixed(1)}天` : `  持仓${hours.toFixed(1)}小时`;
+			}
+
+			const scoreStr = r.signalScore !== null ? `  score=${r.signalScore.toFixed(1)}` : "";
+			const triggerStr = `[${r.trigger}]`;
+
+			console.log(
+				`  ${time}  ${icon} ${r.symbol.padEnd(8)} ${label.padEnd(8)} ` +
+					`${r.side.padEnd(4)} ${r.quantity.toFixed(4).padStart(10)} @ $${r.price.toFixed(2).padStart(10)} ` +
+					`(${r.prevDirection}→${r.direction})${pnlStr}${holdStr}${scoreStr}  ${triggerStr}`,
+			);
+
+			if (r.tradeGroup) {
+				console.log(`           group=${r.tradeGroup.substring(0, 8)}`);
+			}
+		}
+
+		console.log(`\n  共 ${rows.length} 条记录`);
 		closeDb();
 	});
 

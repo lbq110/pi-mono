@@ -1,8 +1,9 @@
+import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { getAlpacaClient } from "../broker/alpaca.js";
 import { loadConfig } from "../config.js";
 import type { Db } from "../db/client.js";
-import { orders, positions, tradeLog } from "../db/schema.js";
+import { orders, positions, positionTrades, tradeLog } from "../db/schema.js";
 import { createChildLogger } from "../logger.js";
 import { postToSlack } from "../notifications/slack.js";
 import { isInStopLossCooldown, updateDrawdownTier, updateHighWaterMarks } from "./risk-manager.js";
@@ -452,9 +453,129 @@ interface PositionChange {
 	newDirection: string;
 	prevQty: number;
 	newQty: number;
+	prevAvgCost: number;
 	avgCost: number;
 	currentPrice: number;
 	pnl: number;
+	openedAt: string | null; // previous position's openedAt (for holdingDuration calc on close)
+}
+
+/** Map PositionChange.changeType to positionTrades.operationType */
+function mapOperationType(changeType: PositionChange["changeType"]): string {
+	switch (changeType) {
+		case "open":
+			return "open";
+		case "close":
+			return "close";
+		case "resize":
+			return "reduce"; // resize detected by syncPositionsToDb is always qty change
+		case "flip":
+			return "flip";
+	}
+}
+
+/** Record a position trade into the position_trades table */
+export function recordPositionTrade(
+	db: Db,
+	opts: {
+		change: PositionChange;
+		trigger: string;
+		signalScore?: number | null;
+		signalSnapshot?: unknown;
+		tradeGroup?: string | null;
+		alpacaOrderId?: string | null;
+	},
+): void {
+	const { change, trigger, signalScore, signalSnapshot, tradeGroup, alpacaOrderId } = opts;
+	const now = new Date().toISOString();
+
+	const operationType = mapOperationType(change.changeType);
+
+	// Determine side
+	const side =
+		change.changeType === "close"
+			? change.prevDirection === "long"
+				? "sell"
+				: "buy"
+			: change.newDirection === "long"
+				? "buy"
+				: change.newDirection === "short"
+					? "sell"
+					: change.prevDirection === "long"
+						? "sell"
+						: "buy";
+
+	// Determine trade quantity and price
+	let tradeQty: number;
+	let tradePrice: number;
+
+	if (change.changeType === "open" || change.changeType === "flip") {
+		tradeQty = change.newQty;
+		tradePrice = change.avgCost; // new position's avg entry
+	} else if (change.changeType === "close") {
+		tradeQty = change.prevQty;
+		tradePrice = change.currentPrice; // last known price (close price)
+	} else {
+		// resize
+		tradeQty = Math.abs(change.newQty - change.prevQty);
+		tradePrice = change.currentPrice;
+	}
+
+	// Compute realized PnL for closing operations
+	let realizedPnl: number | null = null;
+	let realizedPnlPct: number | null = null;
+	if (change.changeType === "close" || change.changeType === "flip") {
+		const costBasis = change.prevAvgCost;
+		const closePrice = change.currentPrice;
+		const closedQty = change.prevQty;
+		if (change.prevDirection === "long") {
+			realizedPnl = (closePrice - costBasis) * closedQty;
+		} else {
+			realizedPnl = (costBasis - closePrice) * closedQty;
+		}
+		realizedPnlPct = costBasis > 0 ? realizedPnl / (costBasis * closedQty) : null;
+	} else if (change.changeType === "resize" && change.newQty < change.prevQty) {
+		// Partial close
+		const reducedQty = change.prevQty - change.newQty;
+		if (change.prevDirection === "long") {
+			realizedPnl = (change.currentPrice - change.prevAvgCost) * reducedQty;
+		} else {
+			realizedPnl = (change.prevAvgCost - change.currentPrice) * reducedQty;
+		}
+		realizedPnlPct = change.prevAvgCost > 0 ? realizedPnl / (change.prevAvgCost * reducedQty) : null;
+	}
+
+	// Compute holding duration
+	let holdingDuration: number | null = null;
+	if ((change.changeType === "close" || change.changeType === "flip") && change.openedAt) {
+		holdingDuration = Math.round((Date.now() - new Date(change.openedAt).getTime()) / 1000);
+	}
+
+	db.insert(positionTrades)
+		.values({
+			symbol: change.symbol,
+			operationType,
+			side,
+			direction: change.newDirection,
+			quantity: tradeQty,
+			price: tradePrice,
+			notional: tradeQty * tradePrice,
+			prevDirection: change.prevDirection,
+			prevQuantity: change.prevQty,
+			prevAvgCost: change.prevAvgCost,
+			newQuantity: change.newQty,
+			newAvgCost: change.avgCost,
+			realizedPnl,
+			realizedPnlPct,
+			holdingDuration,
+			trigger,
+			signalScore: signalScore ?? null,
+			signalSnapshot: signalSnapshot ?? null,
+			tradeGroup: tradeGroup ?? null,
+			alpacaOrderId: alpacaOrderId ?? null,
+			createdAt: now,
+		})
+		.run();
 }
 
 /** Sync local positions table with Alpaca actuals, track changes, and set openedAt */
@@ -472,6 +593,9 @@ async function syncPositionsToDb(db: Db): Promise<PositionChange[]> {
 		const prev = db.select().from(positions).where(eq(positions.symbol, sym)).all()[0];
 		const prevDirection = prev?.direction ?? "flat";
 		const prevQty = prev?.quantity ?? 0;
+
+		const prevAvgCost = prev?.avgCost ?? 0;
+		const prevOpenedAt = prev?.openedAt ?? null;
 
 		if (p) {
 			const direction: "long" | "short" = p.side === "short" ? "short" : "long";
@@ -521,9 +645,11 @@ async function syncPositionsToDb(db: Db): Promise<PositionChange[]> {
 					newDirection: direction,
 					prevQty,
 					newQty: qty,
+					prevAvgCost,
 					avgCost,
 					currentPrice,
 					pnl: unrealizedPnl,
+					openedAt: prevOpenedAt,
 				});
 			} else if (prevDirection !== direction) {
 				changes.push({
@@ -533,9 +659,11 @@ async function syncPositionsToDb(db: Db): Promise<PositionChange[]> {
 					newDirection: direction,
 					prevQty,
 					newQty: qty,
+					prevAvgCost,
 					avgCost,
 					currentPrice,
 					pnl: unrealizedPnl,
+					openedAt: prevOpenedAt,
 				});
 			} else if (Math.abs(qty - prevQty) / Math.max(prevQty, 0.001) > 0.1) {
 				changes.push({
@@ -545,9 +673,11 @@ async function syncPositionsToDb(db: Db): Promise<PositionChange[]> {
 					newDirection: direction,
 					prevQty,
 					newQty: qty,
+					prevAvgCost,
 					avgCost,
 					currentPrice,
 					pnl: unrealizedPnl,
+					openedAt: prevOpenedAt,
 				});
 			}
 		} else {
@@ -560,9 +690,11 @@ async function syncPositionsToDb(db: Db): Promise<PositionChange[]> {
 					newDirection: "flat",
 					prevQty,
 					newQty: 0,
+					prevAvgCost,
 					avgCost: prev?.avgCost ?? 0,
 					currentPrice: prev?.currentPrice ?? 0,
 					pnl: prev?.unrealizedPnl ?? 0,
+					openedAt: prevOpenedAt,
 				});
 			}
 
@@ -709,9 +841,42 @@ export async function runTradeEngine(db: Db, symbolFilter?: TradedSymbol[]): Pro
 	// Sync positions table and detect changes
 	const positionChanges = await syncPositionsToDb(db);
 
-	// Notify position changes via Slack
+	// Record position trades and notify
 	if (positionChanges.length > 0) {
 		log.info({ changes: positionChanges.map((c) => `${c.symbol}:${c.changeType}`) }, "Position changes detected");
+
+		// Determine trigger based on symbol filter
+		const trigger = filterSet
+			? filterSet.has("BTCUSD") && filterSet.size === 1
+				? "hourly_btc"
+				: "daily_pipeline"
+			: "daily_pipeline";
+
+		// Build lookup maps from decisions/outcomes for signal scores and order IDs
+		const decisionMap = new Map(executedDecisions.map((d) => [d.symbol, d]));
+		const outcomeMap = new Map(orderOutcomes.map((o) => [o.symbol, o]));
+
+		// Group flip operations (close + open share same tradeGroup)
+		const flipGroup = new Map<string, string>();
+		for (const c of positionChanges) {
+			if (c.changeType === "flip") {
+				flipGroup.set(c.symbol, randomUUID());
+			}
+		}
+
+		for (const change of positionChanges) {
+			const decision = decisionMap.get(change.symbol);
+			const outcome = outcomeMap.get(change.symbol);
+			recordPositionTrade(db, {
+				change,
+				trigger,
+				signalScore: decision?.score.finalScore ?? null,
+				signalSnapshot: decision?.score.evidence ?? null,
+				tradeGroup: flipGroup.get(change.symbol) ?? null,
+				alpacaOrderId: outcome?.alpacaOrderId ?? null,
+			});
+		}
+
 		notifyPositionChanges(positionChanges).catch((err) =>
 			log.error({ error: err instanceof Error ? err.message : String(err) }, "Position change notification failed"),
 		);
