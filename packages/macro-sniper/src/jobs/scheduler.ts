@@ -1,4 +1,5 @@
 import cron from "node-cron";
+import { formatGapReminder } from "../analyzers/factor-analysis.js";
 import {
 	collectCreditSpreads,
 	collectEconomicCalendar,
@@ -273,6 +274,35 @@ export function startScheduler(streamText: (prompt: string, model: string) => Pr
 						"Treasury auction collection failed",
 					),
 				);
+			},
+			{ timezone },
+		),
+	);
+
+	// ─── Factor gap reminder: every 3 days ───────
+	// Sends factor gap analysis to Slack, highlighting easy-to-add factors
+	scheduledTasks.push(
+		cron.schedule(
+			"0 9 */3 * *",
+			() => {
+				try {
+					const msg = formatGapReminder();
+					const config = loadConfig();
+					if (config.SLACK_BOT_TOKEN && config.SLACK_CHANNEL_ID) {
+						postToSlack(msg, {
+							botToken: config.SLACK_BOT_TOKEN,
+							channelId: config.SLACK_CHANNEL_ID,
+						}).catch((err) =>
+							log.error(
+								{ error: err instanceof Error ? err.message : String(err) },
+								"Factor gap Slack send failed",
+							),
+						);
+					}
+					log.info("Factor gap reminder sent");
+				} catch (err) {
+					log.error({ error: err instanceof Error ? err.message : String(err) }, "Factor gap reminder failed");
+				}
 			},
 			{ timezone },
 		),

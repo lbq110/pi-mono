@@ -576,6 +576,139 @@ program
 		closeDb();
 	});
 
+// ─── factors commands ─────────────────────────────
+
+import {
+	analyzeStructuralRedundancy,
+	computeMetadataCorrelations,
+	computeSignalCorrelations,
+	FACTOR_DIMENSIONS,
+	identifyFactorGaps,
+	META_FACTORS,
+} from "./analyzers/factor-analysis.js";
+
+const factors = program.command("factors").description("Factor analysis and orthogonality tools");
+
+factors
+	.command("dimensions")
+	.description("Show factor dimension classification (6 independent + 2 meta)")
+	.action(() => {
+		console.log("\n══ 因子维度分类（6 个独立维度 + 2 个元因子） ══\n");
+		for (const dim of FACTOR_DIMENSIONS) {
+			console.log(`  ${dim.name}`);
+			console.log(`    问题: ${dim.question}`);
+			console.log(`    信号: ${dim.signals.join(", ")}`);
+			console.log(`    主要指标: ${dim.primaryMetric}`);
+			if (dim.sharedInputs.length > 0) {
+				console.log(`    共享输入: ${dim.sharedInputs.join(", ")}`);
+			}
+			console.log();
+		}
+		console.log("  ── 元因子 ──\n");
+		for (const mf of META_FACTORS) {
+			console.log(`  ${mf.name}: ${mf.question} → ${mf.signal}`);
+		}
+		console.log();
+	});
+
+factors
+	.command("redundancy")
+	.description("Analyze structural and statistical factor redundancy")
+	.action(() => {
+		const db = getDb();
+		runMigrations();
+
+		// Structural redundancy
+		console.log("\n══ 结构冗余分析（共享输入数据源） ══\n");
+		const overlaps = analyzeStructuralRedundancy();
+		if (overlaps.length === 0) {
+			console.log("  无结构冗余（各维度输入完全独立）");
+		} else {
+			for (const o of overlaps) {
+				const pct = (o.overlapScore * 100).toFixed(0);
+				console.log(`  ${o.factorA} ↔ ${o.factorB}`);
+				console.log(`    共享: ${o.sharedInputs.join(", ")} (重叠度 ${pct}%)`);
+				console.log();
+			}
+		}
+
+		// Signal correlation
+		console.log("══ 信号方向相关性（分类信号 → 数值） ══\n");
+		const { correlations: sigCorr, dataPoints, sufficient } = computeSignalCorrelations(db);
+		if (!sufficient) {
+			console.log(`  数据不足: ${dataPoints} 天 (需要 ≥ 10 天)\n`);
+		}
+		if (sigCorr.length > 0) {
+			const sorted = sigCorr.sort((a, b) => Math.abs(b.correlation) - Math.abs(a.correlation));
+			console.log("  因子 A              因子 B              相关系数  判定");
+			console.log(`  ${"─".repeat(70)}`);
+			for (const c of sorted) {
+				const r = c.correlation;
+				const abs = Math.abs(r);
+				let verdict = "";
+				if (abs > 0.7) verdict = "⚠️  高度冗余 — 应合并";
+				else if (abs > 0.4) verdict = "⚡ 中度相关 — 降权";
+				else verdict = "✅ 独立";
+				console.log(
+					`  ${c.typeA.padEnd(20)} ${c.typeB.padEnd(20)} ${r >= 0 ? "+" : ""}${r.toFixed(3)}    ${verdict}`,
+				);
+			}
+			console.log(`\n  数据点: ${dataPoints} 天 ${sufficient ? "" : "(不足，仅供参考)"}`);
+		}
+
+		// Metadata correlation
+		console.log("\n══ 连续指标相关性（metadata 数值） ══\n");
+		const { correlations: metaCorr, sufficient: metaSuf } = computeMetadataCorrelations(db);
+		if (metaCorr.length > 0) {
+			const sorted = metaCorr.sort((a, b) => Math.abs(b.correlation) - Math.abs(a.correlation));
+			for (const c of sorted.slice(0, 15)) {
+				const r = c.correlation;
+				const abs = Math.abs(r);
+				const tag = abs > 0.7 ? "⚠️" : abs > 0.4 ? "⚡" : "✅";
+				console.log(
+					`  ${tag} ${c.metricA.padEnd(35)} ↔ ${c.metricB.padEnd(35)} r=${r >= 0 ? "+" : ""}${r.toFixed(3)} (n=${c.dataPoints})`,
+				);
+			}
+			console.log(`\n  统计显著性: ${metaSuf ? "足够" : "不足（仅供参考）"}`);
+		} else {
+			console.log("  数据不足");
+		}
+		console.log();
+
+		closeDb();
+	});
+
+factors
+	.command("gaps")
+	.description("Show factor gap analysis — what factors could be added")
+	.action(() => {
+		const gaps = identifyFactorGaps();
+
+		console.log("\n══ 因子空白区域分析 ══\n");
+
+		const categories = [...new Set(gaps.map((g) => g.category))];
+		for (const cat of categories) {
+			console.log(`  ── ${cat} ──\n`);
+			const catGaps = gaps.filter((g) => g.category === cat);
+			for (const g of catGaps) {
+				const icon = g.status === "implemented" ? "✅" : g.status === "possible" ? "🔲" : "🚫";
+				const diff = g.difficulty === "easy" ? "简单" : g.difficulty === "medium" ? "中等" : "困难";
+				console.log(`    ${icon} [${diff}] ${g.description}`);
+				if (g.status !== "implemented") {
+					console.log(`       数据源: ${g.dataSource}`);
+				}
+			}
+			console.log();
+		}
+
+		const possible = gaps.filter((g) => g.status === "possible");
+		const easy = possible.filter((g) => g.difficulty === "easy");
+		console.log(
+			`  总计: ${gaps.filter((g) => g.status === "implemented").length} 已实现 | ${possible.length} 可加入 (${easy.length} 简单) | ${gaps.filter((g) => g.status === "blocked").length} 受限`,
+		);
+		console.log();
+	});
+
 // ─── srf command ─────────────────────────────────
 
 program
