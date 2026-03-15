@@ -1,0 +1,379 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>USD 价值影响因子模型看板 — Macro Sniper</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
+<style>
+:root {
+	--bg: #0d1117; --surface: #161b22; --border: #30363d;
+	--text: #e6edf3; --muted: #8b949e; --accent: #58a6ff;
+	--green: #3fb950; --red: #f85149; --yellow: #d29922; --purple: #bc8cff;
+	--cyan: #39d353; --orange: #f0883e;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { background: var(--bg); color: var(--text); font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif; font-size: 14px; line-height: 1.5; padding: 20px; }
+h1 { font-size: 24px; margin-bottom: 8px; }
+h2 { font-size: 18px; color: var(--accent); margin: 24px 0 12px; border-bottom: 1px solid var(--border); padding-bottom: 6px; }
+h3 { font-size: 15px; color: var(--muted); margin: 16px 0 8px; }
+.subtitle { color: var(--muted); margin-bottom: 20px; }
+.grid { display: grid; gap: 16px; }
+.grid-2 { grid-template-columns: 1fr 1fr; }
+.grid-3 { grid-template-columns: 1fr 1fr 1fr; }
+.grid-5 { grid-template-columns: repeat(5, 1fr); }
+.card { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 16px; }
+.card-header { font-size: 13px; color: var(--muted); margin-bottom: 8px; text-transform: uppercase; letter-spacing: 0.5px; }
+.big-number { font-size: 32px; font-weight: 700; }
+.signal-badge { display: inline-block; padding: 2px 10px; border-radius: 12px; font-size: 12px; font-weight: 600; }
+.signal-bullish { background: rgba(63,185,80,0.15); color: var(--green); }
+.signal-bearish { background: rgba(248,81,73,0.15); color: var(--red); }
+.signal-neutral { background: rgba(139,148,158,0.15); color: var(--muted); }
+.gauge { position: relative; height: 8px; background: var(--border); border-radius: 4px; margin: 8px 0; overflow: visible; }
+.gauge-fill { height: 100%; border-radius: 4px; transition: width 0.3s; }
+.gauge-marker { position: absolute; top: -4px; width: 3px; height: 16px; background: #fff; border-radius: 1px; transform: translateX(-1px); }
+.factor-row { display: flex; align-items: center; padding: 8px 0; border-bottom: 1px solid var(--border); }
+.factor-row:last-child { border-bottom: none; }
+.factor-name { width: 140px; font-weight: 600; font-size: 13px; }
+.factor-score { width: 60px; text-align: right; font-weight: 700; font-size: 15px; }
+.factor-weight { width: 50px; text-align: right; color: var(--muted); font-size: 12px; }
+.factor-bar { flex: 1; margin: 0 12px; }
+.factor-detail { font-size: 12px; color: var(--muted); margin-top: 2px; }
+.chart-container { position: relative; height: 260px; }
+.chart-container-lg { position: relative; height: 340px; }
+table { width: 100%; border-collapse: collapse; font-size: 13px; }
+th { text-align: left; color: var(--muted); font-weight: 600; padding: 8px; border-bottom: 2px solid var(--border); }
+td { padding: 8px; border-bottom: 1px solid var(--border); }
+.text-green { color: var(--green); } .text-red { color: var(--red); } .text-yellow { color: var(--yellow); }
+.text-muted { color: var(--muted); }
+.fx-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+.fx-item { display: flex; justify-content: space-between; padding: 6px 10px; background: rgba(48,54,61,0.5); border-radius: 6px; }
+.fx-pair { font-weight: 600; } .fx-rate { font-variant-numeric: tabular-nums; }
+.yield-decomp { display: flex; height: 28px; border-radius: 4px; overflow: hidden; margin: 8px 0; }
+.yield-decomp div { display: flex; align-items: center; justify-content: center; font-size: 11px; font-weight: 600; }
+.legend { display: flex; gap: 16px; flex-wrap: wrap; margin: 8px 0; }
+.legend-item { display: flex; align-items: center; gap: 4px; font-size: 12px; color: var(--muted); }
+.legend-dot { width: 10px; height: 10px; border-radius: 50%; }
+.impact-matrix { display: grid; grid-template-columns: auto repeat(4, 1fr); gap: 1px; font-size: 12px; }
+.impact-cell { padding: 6px 8px; background: var(--surface); text-align: center; }
+.impact-header { font-weight: 700; color: var(--accent); }
+.impact-positive { color: var(--green); } .impact-negative { color: var(--red); }
+@media (max-width: 900px) { .grid-2, .grid-3, .grid-5 { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<h1>USD 价值影响因子模型看板</h1>
+<p class="subtitle">Macro Sniper — γ = r<sub>f</sub> + π<sub>risk</sub> − cy | 数据更新: <span id="lastUpdate"></span></p>
+
+<!-- Top KPIs -->
+<div class="grid grid-5" id="kpi-row"></div>
+
+<h2>📊 5 因子分解</h2>
+<div class="grid grid-2">
+	<div class="card" id="factor-bars"></div>
+	<div class="card">
+		<div class="card-header">因子得分时间序列</div>
+		<div class="chart-container"><canvas id="factorChart"></canvas></div>
+	</div>
+</div>
+
+<h2>📈 USD 综合得分 vs 资产价格</h2>
+<div class="card">
+	<div class="chart-container-lg"><canvas id="compositeChart"></canvas></div>
+</div>
+
+<h2>🧩 收益率分解 (10Y = Real Rate + BEI + Term Premium)</h2>
+<div class="grid grid-2">
+	<div class="card" id="yield-decomp-card"></div>
+	<div class="card">
+		<div class="card-header">分解时间序列</div>
+		<div class="chart-container"><canvas id="yieldChart"></canvas></div>
+	</div>
+</div>
+
+<h2>💱 FX 汇率面板</h2>
+<div class="card" id="fx-panel"></div>
+
+<h2>🔗 USD 因子→资产价格影响矩阵</h2>
+<div class="card" id="impact-matrix"></div>
+
+<h2>📋 历史数据表</h2>
+<div class="card" style="overflow-x:auto;">
+	<table id="history-table"></table>
+</div>
+
+<h2>🌡️ 全因子信号仪表盘</h2>
+<div class="grid grid-3" id="all-signals"></div>
+
+<script>
+// Embed data
+const DATA = DASHBOARD_DATA_PLACEHOLDER;
+
+const usd = DATA.usdModel;
+const latest = usd[usd.length - 1];
+const prev = usd.length > 1 ? usd[usd.length - 2] : null;
+
+function delta(cur, prv, key) {
+	if (!prv || cur[key] == null || prv[key] == null) return '';
+	const d = cur[key] - prv[key];
+	const sign = d >= 0 ? '+' : '';
+	const cls = d > 0 ? 'text-green' : d < 0 ? 'text-red' : 'text-muted';
+	return `<span class="${cls}">${sign}${d.toFixed(1)}</span>`;
+}
+
+function signalClass(s) {
+	if (s === 'bullish' || s === 'risk_on' || s === 'expanding') return 'signal-bullish';
+	if (s === 'bearish' || s === 'bearish_alert' || s === 'risk_off' || s === 'contracting' ||
+		s === 'risk_off_confirmed' || s === 'risk_off_severe') return 'signal-bearish';
+	return 'signal-neutral';
+}
+
+function scoreColor(v) { return v >= 60 ? '#3fb950' : v <= 40 ? '#f85149' : '#d29922'; }
+
+// ─── KPI Row ──────────────────────────────
+document.getElementById('lastUpdate').textContent = latest.date;
+const kpis = [
+	{ label: 'USD 综合得分', value: latest.composite_score?.toFixed(1) ?? 'N/A', delta: delta(latest, prev, 'composite_score'), signal: latest.signal },
+	{ label: 'DXY', value: latest.dxy?.toFixed(2) ?? 'N/A', delta: delta(latest, prev, 'dxy'), signal: null },
+	{ label: 'DXY 周变化', value: latest.dxy_change_pct != null ? latest.dxy_change_pct.toFixed(2) + '%' : 'N/A', signal: null },
+	{ label: 'VIX', value: latest.vix?.toFixed(1) ?? 'N/A', signal: null },
+	{ label: '收益率驱动', value: latest.yield_decomposition?.driver ?? 'N/A', signal: null },
+];
+document.getElementById('kpi-row').innerHTML = kpis.map(k => `
+	<div class="card">
+		<div class="card-header">${k.label}</div>
+		<div class="big-number" style="color: ${k.signal ? scoreColor(parseFloat(k.value)) : 'var(--text)'}">${k.value}</div>
+		${k.delta ? `<div style="margin-top:4px">${k.delta}</div>` : ''}
+		${k.signal ? `<span class="signal-badge ${signalClass(k.signal)}">${k.signal}</span>` : ''}
+	</div>`).join('');
+
+// ─── Factor Bars ──────────────────────────
+const factors = [
+	{ name: '利率支撑 r_f', key: 'rate_support_score', weight: 0.30, detail: `Fed=${latest.fed_funds_rate}% ECB=${latest.ecb_rate ?? 'N/A'}% 差=${latest.fed_ecb_diff ?? 'N/A'}% 实际利率=${latest.real_rate_10y ?? 'N/A'}%` },
+	{ name: '风险溢价 π_risk', key: 'risk_premium_score', weight: 0.25, detail: `期限溢价=${latest.term_premium_10y?.toFixed(2) ?? 'N/A'} VIX=${latest.vix ?? 'N/A'} 驱动=${latest.yield_decomposition?.driver ?? 'N/A'}` },
+	{ name: '便利收益 cy', key: 'convenience_yield_score', weight: 0.15, detail: `GLD变化=${latest.gold_change_pct?.toFixed(1) ?? 'N/A'}% SOFR-IORB=${latest.sofr_iorb_spread_bps ?? 'N/A'}bp` },
+	{ name: '对冲传导', key: 'hedge_transmission_score', weight: 0.10, detail: `CFTC净持仓=${latest.cftc_noncomm_net ?? 'N/A'} CIP基差=${latest.cip_basis_proxy?.toFixed(1) ?? 'N/A'}` },
+	{ name: '全球相对强弱', key: 'global_relative_score', weight: 0.20, detail: `EUR/USD=${latest.eurusd ?? 'N/A'} USD/JPY=${latest.usdjpy ?? 'N/A'} USD/CNY=${latest.usdcny ?? 'N/A'}` },
+];
+document.getElementById('factor-bars').innerHTML = `
+	<div class="card-header">因子得分 (0=看空USD, 50=中性, 100=看多USD)</div>
+	${factors.map(f => {
+		const v = latest[f.key] ?? 50;
+		const color = scoreColor(v);
+		return `<div class="factor-row">
+			<div class="factor-name">${f.name}</div>
+			<div class="factor-score" style="color:${color}">${v.toFixed(1)}</div>
+			<div class="factor-weight">×${f.weight}</div>
+			<div class="factor-bar">
+				<div class="gauge">
+					<div class="gauge-fill" style="width:${v}%;background:${color}"></div>
+					<div class="gauge-marker" style="left:50%"></div>
+				</div>
+				<div class="factor-detail">${f.detail}</div>
+			</div>
+		</div>`;
+	}).join('')}
+	<div style="margin-top:12px;padding-top:12px;border-top:2px solid var(--border);">
+		<div class="factor-row">
+			<div class="factor-name" style="font-size:15px">综合得分</div>
+			<div class="factor-score" style="font-size:20px;color:${scoreColor(latest.composite_score)}">${latest.composite_score?.toFixed(1)}</div>
+			<div class="factor-weight"></div>
+			<div class="factor-bar"><div class="gauge"><div class="gauge-fill" style="width:${latest.composite_score}%;background:${scoreColor(latest.composite_score)}"></div><div class="gauge-marker" style="left:50%"></div></div></div>
+		</div>
+	</div>`;
+
+// ─── Factor Chart ─────────────────────────
+const dates = usd.map(d => d.date.slice(5));
+new Chart(document.getElementById('factorChart'), {
+	type: 'line',
+	data: {
+		labels: dates,
+		datasets: [
+			{ label: '利率支撑', data: usd.map(d => d.rate_support_score), borderColor: '#58a6ff', tension: 0.3, pointRadius: 3 },
+			{ label: '风险溢价', data: usd.map(d => d.risk_premium_score), borderColor: '#f0883e', tension: 0.3, pointRadius: 3 },
+			{ label: '便利收益', data: usd.map(d => d.convenience_yield_score), borderColor: '#bc8cff', tension: 0.3, pointRadius: 3 },
+			{ label: '对冲传导', data: usd.map(d => d.hedge_transmission_score), borderColor: '#39d353', tension: 0.3, pointRadius: 3 },
+			{ label: '全球相对', data: usd.map(d => d.global_relative_score), borderColor: '#d29922', tension: 0.3, pointRadius: 3 },
+		]
+	},
+	options: {
+		responsive: true, maintainAspectRatio: false,
+		scales: { y: { min: 0, max: 100, grid: { color: '#30363d' }, ticks: { color: '#8b949e' } }, x: { grid: { color: '#30363d' }, ticks: { color: '#8b949e' } } },
+		plugins: { legend: { labels: { color: '#e6edf3', usePointStyle: true, pointStyle: 'circle' } } }
+	}
+});
+
+// ─── Composite vs Prices ──────────────────
+const priceColors = { SPY: '#58a6ff', QQQ: '#bc8cff', IWM: '#39d353', BTCUSD: '#f0883e' };
+const priceDatasets = Object.entries(DATA.prices).map(([sym, rows]) => ({
+	label: sym,
+	data: rows.map(r => ({ x: r.date.slice(5), y: r.close })),
+	borderColor: priceColors[sym],
+	tension: 0.3, pointRadius: 2, yAxisID: 'yPrice'
+}));
+new Chart(document.getElementById('compositeChart'), {
+	type: 'line',
+	data: {
+		labels: dates,
+		datasets: [
+			{ label: 'USD Composite', data: usd.map(d => d.composite_score), borderColor: '#f85149', borderWidth: 3, tension: 0.3, pointRadius: 4, yAxisID: 'yUSD', borderDash: [5, 5] },
+			{ label: 'DXY', data: usd.map(d => d.dxy), borderColor: '#d29922', borderWidth: 2, tension: 0.3, pointRadius: 3, yAxisID: 'yDXY' },
+			...priceDatasets.filter(d => d.label === 'SPY' || d.label === 'QQQ')
+		]
+	},
+	options: {
+		responsive: true, maintainAspectRatio: false,
+		scales: {
+			yUSD: { position: 'left', min: 30, max: 80, grid: { color: '#30363d' }, ticks: { color: '#f85149' }, title: { display: true, text: 'USD Score', color: '#f85149' } },
+			yDXY: { position: 'right', grid: { drawOnChartArea: false }, ticks: { color: '#d29922' }, title: { display: true, text: 'DXY', color: '#d29922' } },
+			yPrice: { display: false },
+			x: { grid: { color: '#30363d' }, ticks: { color: '#8b949e' } }
+		},
+		plugins: { legend: { labels: { color: '#e6edf3', usePointStyle: true } } }
+	}
+});
+
+// ─── Yield Decomposition ──────────────────
+const yd = latest.yield_decomposition;
+if (yd && yd.nominal_10y) {
+	const rr = yd.real_rate_est ?? 0;
+	const bei = yd.inflation_expectation ?? 0;
+	const tp = yd.term_premium ?? 0;
+	const total = Math.abs(rr) + Math.abs(bei) + Math.abs(tp) || 1;
+	document.getElementById('yield-decomp-card').innerHTML = `
+		<div class="card-header">10Y 收益率分解: ${yd.nominal_10y?.toFixed(2)}%</div>
+		<div class="yield-decomp">
+			<div style="width:${Math.abs(rr)/total*100}%;background:#58a6ff">实际利率 ${rr?.toFixed(2)}%</div>
+			<div style="width:${Math.abs(bei)/total*100}%;background:#f0883e">通胀预期 ${bei?.toFixed(2)}%</div>
+			<div style="width:${Math.abs(tp)/total*100}%;background:#bc8cff">期限溢价 ${tp?.toFixed(2)}%</div>
+		</div>
+		<div class="legend">
+			<div class="legend-item"><div class="legend-dot" style="background:#58a6ff"></div>实际利率 (Real Rate)</div>
+			<div class="legend-item"><div class="legend-dot" style="background:#f0883e"></div>通胀预期 (BEI)</div>
+			<div class="legend-item"><div class="legend-dot" style="background:#bc8cff"></div>期限溢价 (ACM TP)</div>
+		</div>
+		<p style="margin-top:8px;font-size:13px;">主要驱动: <strong style="color:${yd.driver==='real_rate'?'#58a6ff':yd.driver==='inflation'?'#f0883e':'#bc8cff'}">${yd.driver}</strong></p>
+		<p class="text-muted" style="font-size:12px;margin-top:4px;">驱动判定基于7日delta最大分量</p>`;
+} else {
+	document.getElementById('yield-decomp-card').innerHTML = '<p class="text-muted">收益率分解数据不可用</p>';
+}
+
+// Yield decomposition time series
+const ydData = usd.filter(d => d.yield_decomposition?.real_rate_est != null);
+if (ydData.length > 0) {
+	new Chart(document.getElementById('yieldChart'), {
+		type: 'bar',
+		data: {
+			labels: ydData.map(d => d.date.slice(5)),
+			datasets: [
+				{ label: '实际利率', data: ydData.map(d => d.yield_decomposition.real_rate_est), backgroundColor: '#58a6ff', stack: 'a' },
+				{ label: '通胀预期', data: ydData.map(d => d.yield_decomposition.inflation_expectation), backgroundColor: '#f0883e', stack: 'a' },
+				{ label: '期限溢价', data: ydData.map(d => d.yield_decomposition.term_premium), backgroundColor: '#bc8cff', stack: 'a' },
+			]
+		},
+		options: {
+			responsive: true, maintainAspectRatio: false,
+			scales: { y: { stacked: true, grid: { color: '#30363d' }, ticks: { color: '#8b949e' } }, x: { stacked: true, grid: { color: '#30363d' }, ticks: { color: '#8b949e' } } },
+			plugins: { legend: { labels: { color: '#e6edf3', usePointStyle: true } } }
+		}
+	});
+}
+
+// ─── FX Panel ─────────────────────────────
+const fxPairs = latest.fx_pairs ?? {};
+document.getElementById('fx-panel').innerHTML = `
+	<div class="card-header">最新汇率快照 (${latest.date})</div>
+	<div class="fx-grid">
+		${Object.entries(fxPairs).map(([pair, rate]) => `
+			<div class="fx-item"><span class="fx-pair">${pair}</span><span class="fx-rate">${Number(rate).toFixed(4)}</span></div>
+		`).join('')}
+	</div>`;
+
+// ─── Impact Matrix ────────────────────────
+const impactData = [
+	{ factor: '利率支撑↑', SPY: { v: -0.6, t: '弱负' }, QQQ: { v: -1.0, t: '强负' }, IWM: { v: -0.2, t: '微弱' }, BTC: { v: -0.5, t: '中负' } },
+	{ factor: '风险溢价↑ (全球)', SPY: { v: -1.3, t: '强负' }, QQQ: { v: -1.3, t: '强负' }, IWM: { v: -1.3, t: '强负' }, BTC: { v: -0.65, t: '中负' } },
+	{ factor: '风险溢价↑ (美国)', SPY: { v: 0.8, t: '反向负' }, QQQ: { v: 0.8, t: '反向负' }, IWM: { v: 0.8, t: '反向负' }, BTC: { v: 0.4, t: '微正' } },
+	{ factor: '便利收益↑', SPY: { v: -0.3, t: '弱负' }, QQQ: { v: -0.3, t: '弱负' }, IWM: { v: -0.3, t: '弱负' }, BTC: { v: -0.15, t: '微弱' } },
+	{ factor: '全球相对↑', SPY: { v: -0.4, t: '弱负' }, QQQ: { v: -0.4, t: '弱负' }, IWM: { v: -0.2, t: '微弱' }, BTC: { v: -0.2, t: '微弱' } },
+];
+document.getElementById('impact-matrix').innerHTML = `
+	<div class="card-header">USD 因子变化 → 资产影响方向 (sensitivity × impact multiplier)</div>
+	<div class="impact-matrix" style="margin-top:12px;">
+		<div class="impact-cell impact-header">因子</div>
+		<div class="impact-cell impact-header">SPY (×0.6)</div>
+		<div class="impact-cell impact-header">QQQ (×1.0)</div>
+		<div class="impact-cell impact-header">IWM (×0.2)</div>
+		<div class="impact-cell impact-header">BTCUSD (×0.5)</div>
+		${impactData.map(row => `
+			<div class="impact-cell" style="text-align:left;font-weight:600">${row.factor}</div>
+			${['SPY','QQQ','IWM','BTC'].map(s => {
+				const d = row[s];
+				const cls = d.v > 0 ? 'impact-positive' : d.v < 0 ? 'impact-negative' : '';
+				return `<div class="impact-cell ${cls}">${d.t}</div>`;
+			}).join('')}
+		`).join('')}
+	</div>
+	<p class="text-muted" style="margin-top:8px;font-size:12px;">
+		说明: USD因子上升通常压制美股（负相关），但"为什么强"比"多强"更重要。<br>
+		经济增长驱动的强美元(利率支撑)对股票伤害小；避险驱动(风险溢价-全球)伤害大。<br>
+		美国特有风险(风险溢价-美国): USD弱但股票也弱，符号翻转。
+	</p>`;
+
+// ─── History Table ────────────────────────
+const headers = ['日期', 'DXY', '周变化', '综合得分', '信号', '利率支撑', '风险溢价', '便利收益', '对冲传导', '全球相对', '驱动'];
+document.getElementById('history-table').innerHTML = `
+	<thead><tr>${headers.map(h => `<th>${h}</th>`).join('')}</tr></thead>
+	<tbody>
+	${usd.slice().reverse().map(d => `<tr>
+		<td>${d.date}</td>
+		<td>${d.dxy?.toFixed(2) ?? '-'}</td>
+		<td class="${(d.dxy_change_pct ?? 0) > 0 ? 'text-green' : (d.dxy_change_pct ?? 0) < 0 ? 'text-red' : ''}">${d.dxy_change_pct?.toFixed(2) ?? '-'}%</td>
+		<td style="font-weight:700;color:${scoreColor(d.composite_score)}">${d.composite_score?.toFixed(1)}</td>
+		<td><span class="signal-badge ${signalClass(d.signal)}">${d.signal}</span></td>
+		<td>${d.rate_support_score?.toFixed(1)}</td>
+		<td>${d.risk_premium_score?.toFixed(1)}</td>
+		<td>${d.convenience_yield_score?.toFixed(1)}</td>
+		<td>${d.hedge_transmission_score?.toFixed(1)}</td>
+		<td>${d.global_relative_score?.toFixed(1)}</td>
+		<td>${d.yield_decomposition?.driver ?? '-'}</td>
+	</tr>`).join('')}
+	</tbody>`;
+
+// ─── All Signals Dashboard ────────────────
+const signalLabels = {
+	liquidity_signal: '💧 流动性体制',
+	yield_curve: '📈 收益率曲线',
+	credit_risk: '🛡️ 信用风险',
+	sentiment_signal: '🌡️ 情绪指标',
+	btc_signal: '₿ BTC 信号',
+	market_bias: '🎯 市场偏向',
+	auction_health: '🏛️ 国债拍卖',
+	funding_stress: '🏦 资金压力',
+	correlation_matrix: '🔗 相关性',
+};
+const allSignalsHtml = Object.entries(DATA.signals).map(([type, rows]) => {
+	if (!rows.length) return '';
+	const latest = rows[rows.length - 1];
+	const meta = typeof latest.metadata === 'string' ? JSON.parse(latest.metadata) : latest.metadata;
+	let detail = '';
+	if (meta.composite_score != null) detail = `综合: ${meta.composite_score.toFixed(1)}`;
+	else if (meta.stress_score != null) detail = `压力: ${meta.stress_score.toFixed(1)}`;
+	else if (meta.aggregate_health != null) detail = `健康度: ${meta.aggregate_health.toFixed(1)}`;
+	else if (meta.confidence) detail = `置信: ${meta.confidence}`;
+	else if (meta.btc_spy_7d != null) detail = `BTC-SPY 7d: ${meta.btc_spy_7d.toFixed(2)}`;
+	else if (meta.credit_multiplier != null) detail = `乘数: ×${meta.credit_multiplier}`;
+
+	return `<div class="card">
+		<div class="card-header">${signalLabels[type] ?? type}</div>
+		<div style="display:flex;align-items:center;gap:12px;margin-top:4px">
+			<span class="signal-badge ${signalClass(latest.signal)}" style="font-size:14px">${latest.signal}</span>
+			<span class="text-muted">${detail}</span>
+		</div>
+		<div class="text-muted" style="font-size:11px;margin-top:4px">${latest.date}</div>
+	</div>`;
+}).join('');
+document.getElementById('all-signals').innerHTML = allSignalsHtml;
+</script>
+</body>
+</html>
