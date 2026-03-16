@@ -540,6 +540,87 @@ function handlePositions() {
 
 	const opIcons: Record<string, string> = { open: "🟢", close: "🔴", add: "📈", reduce: "📉", flip: "🔄", stop_loss: "🚨", btc_crash: "⚠️" };
 	const opColors: Record<string, string> = { open: "var(--gn)", close: "var(--rd)", add: "var(--ac)", reduce: "var(--or)", stop_loss: "var(--rd)", flip: "var(--pp)", btc_crash: "var(--yl)" };
+	const triggerLabels: Record<string, string> = {
+		daily_pipeline: "📅 每日流水线",
+		hourly_btc: "⏰ 每小时BTC",
+		stop_loss: "🚨 止损触发",
+		btc_crash: "⚠️ BTC急跌联动",
+		manual: "🔧 手动操作",
+	};
+
+	function buildTriggerDetail(t: typeof allTrades[0]): string {
+		const label = triggerLabels[t.trigger] ?? t.trigger;
+		const parts: string[] = [`<strong>${label}</strong>`];
+
+		if (t.signalScore != null) {
+			const scoreColor = t.signalScore >= 50 ? "var(--gn)" : t.signalScore >= 20 ? "var(--yl)" : "var(--tx2)";
+			parts.push(`<span style="color:${scoreColor}">评分 ${t.signalScore.toFixed(1)}</span>`);
+		}
+
+		// Extract key info from signalSnapshot
+		const snap = t.signalSnapshot ? (typeof t.signalSnapshot === "string" ? JSON.parse(t.signalSnapshot) : t.signalSnapshot) : null;
+		if (snap) {
+			const factors: string[] = [];
+
+			// Liquidity
+			if (snap.liquidity?.note) {
+				const m = snap.liquidity.note.match(/liquidity=(\w+)/);
+				if (m) factors.push(`流动性:${m[1] === "expanding" ? '<span class="c-g">扩张</span>' : m[1] === "contracting" ? '<span class="c-r">收缩</span>' : "中性"}`);
+			}
+
+			// BTC signal
+			if (snap.btcSignal?.note) {
+				const m = snap.btcSignal.note.match(/btc_signal=(\w+)/);
+				if (m) factors.push(`BTC:${m[1] === "bullish" ? '<span class="c-g">看多</span>' : m[1] === "bearish_alert" ? '<span class="c-r">看空</span>' : "中性"}`);
+			}
+
+			// Correlation regime
+			if (snap.corrRegime?.note) {
+				const m = snap.corrRegime.note.match(/corr_regime=(\w+)/);
+				if (m) factors.push(`相关性:${m[1]}`);
+			}
+
+			// Sentiment
+			if (snap.sentiment?.rawValue != null) {
+				const v = snap.sentiment.rawValue;
+				factors.push(`情绪:${typeof v === "number" ? v.toFixed(0) : v}`);
+			}
+
+			// USD model (for equity)
+			if (snap.usdModel?.note && !snap.usdModel.note.includes("n/a")) {
+				const m = snap.usdModel.note.match(/usd_composite=([\d.]+)/);
+				if (m) factors.push(`USD:${Number(m[1]).toFixed(0)}`);
+			}
+
+			// Yield curve (for equity)
+			if (snap.yieldCurve?.note && !snap.yieldCurve.note.includes("n/a")) {
+				const m = snap.yieldCurve.note.match(/yield_curve=(\w+)/);
+				if (m) factors.push(`曲线:${m[1]}`);
+			}
+
+			// Conflict note
+			if (snap.conflictNote) {
+				factors.push(`<span class="c-y">⚠冲突</span>`);
+			}
+
+			// Stop loss metadata
+			if (snap.method) {
+				factors.push(`方式:${snap.method}`);
+				if (snap.stopPrice != null) factors.push(`止损价:$${Number(snap.stopPrice).toFixed(2)}`);
+			}
+
+			// BTC crash metadata
+			if (snap.btcReturn24h != null) {
+				factors.push(`BTC 24h:${(snap.btcReturn24h * 100).toFixed(1)}%`);
+			}
+
+			if (factors.length > 0) {
+				parts.push(`<span style="font-size:11px">${factors.join(" · ")}</span>`);
+			}
+		}
+
+		return parts.join("<br>");
+	}
 
 	const tradeRows = allTrades.map(t => {
 		const pnl = t.realizedPnl != null ? `<span class="${t.realizedPnl >= 0 ? "c-g" : "c-r"}">${t.realizedPnl >= 0 ? "+" : ""}$${t.realizedPnl.toFixed(2)}</span>` : "—";
@@ -556,7 +637,7 @@ function handlePositions() {
 			<td>${pnl}</td>
 			<td>${t.realizedPnlPct != null ? `${(t.realizedPnlPct * 100).toFixed(2)}%` : "—"}</td>
 			<td>${holdStr}</td>
-			<td style="font-size:11px;color:var(--tx2)">${t.trigger}</td>
+			<td style="font-size:11px;line-height:1.4">${buildTriggerDetail(t)}</td>
 		</tr>`;
 	}).join("");
 
