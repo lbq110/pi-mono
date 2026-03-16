@@ -1,7 +1,6 @@
 #!/usr/bin/env tsx
 /**
  * Macro Sniper Web Dashboard
- * Serves daily reports + static files (USD dashboard).
  *
  * Usage: node --env-file=.env --import tsx dashboard/report-server.ts
  * Access: http://149.28.17.145/
@@ -13,437 +12,427 @@ import { join } from "node:path";
 import { desc, eq, sql } from "drizzle-orm";
 import { getDb } from "../src/db/client.js";
 import { runMigrations } from "../src/db/migrate.js";
-import { analysisResults, generatedReports, positions } from "../src/db/schema.js";
+import { analysisResults, generatedReports, positions, positionTrades } from "../src/db/schema.js";
 
 runMigrations();
 
 const PORT = Number(process.env.DASHBOARD_PORT ?? 80);
-const DASHBOARD_DIR = new URL(".", import.meta.url).pathname;
+const DIR = new URL(".", import.meta.url).pathname;
 
-// ─── Markdown → HTML ────────────────────────────────
+/* ─── DB helpers ─────────────────────────────────── */
+
+function latestSignal(db: ReturnType<typeof getDb>, type: string) {
+	const r = db.select().from(analysisResults).where(eq(analysisResults.type, type)).orderBy(desc(analysisResults.date)).limit(1).all()[0];
+	if (!r) return null;
+	return { signal: r.signal, date: r.date, meta: typeof r.metadata === "string" ? JSON.parse(r.metadata) : r.metadata };
+}
+
+/* ─── Markdown → HTML ────────────────────────────── */
+
+function inline(t: string) {
+	return t.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>").replace(/__(.+?)__/g, "<strong>$1</strong>");
+}
 
 function mdToHtml(md: string): string {
-	// Process tables first (before escaping)
 	const lines = md.split("\n");
-	const result: string[] = [];
-	let inTable = false;
-	let tableRows: string[][] = [];
+	const out: string[] = [];
+	let tbl: string[][] = [];
+	let inTbl = false;
 
-	function flushTable() {
-		if (tableRows.length < 2) {
-			inTable = false;
-			tableRows = [];
-			return;
-		}
-		const headers = tableRows[0];
-		const body = tableRows.slice(2); // skip separator row
-		let t = '<div class="table-wrap"><table><thead><tr>';
-		for (const h of headers) t += `<th>${processInline(h.trim())}</th>`;
-		t += "</tr></thead><tbody>";
-		for (const row of body) {
-			t += "<tr>";
-			for (let i = 0; i < headers.length; i++) {
-				const cell = row[i]?.trim() ?? "";
-				// Color PnL cells
+	function flushTbl() {
+		if (tbl.length < 2) { inTbl = false; tbl = []; return; }
+		const hd = tbl[0];
+		const bd = tbl.slice(2);
+		let h = '<div class="tbl-wrap"><table><thead><tr>';
+		for (const c of hd) h += `<th>${inline(c.trim())}</th>`;
+		h += "</tr></thead><tbody>";
+		for (const row of bd) {
+			h += "<tr>";
+			for (let i = 0; i < hd.length; i++) {
+				const c = row[i]?.trim() ?? "";
 				let cls = "";
-				if (cell.startsWith("+") || cell.startsWith("$+") || cell.includes("risk_on") || cell.includes("expanding") || cell.includes("bullish") || cell.includes("Long")) cls = ' class="text-green"';
-				else if (cell.startsWith("-") || cell.startsWith("$-") || cell.includes("risk_off") || cell.includes("contracting") || cell.includes("bearish") || cell.includes("flat")) cls = ' class="text-red"';
-				t += `<td${cls}>${processInline(cell)}</td>`;
+				if (/^\+|^\$\+|risk_on|expanding|bullish|Long/.test(c)) cls = ' class="c-g"';
+				else if (/^-[0-9$]|^\$-|risk_off|contracting|bearish|flat/.test(c)) cls = ' class="c-r"';
+				h += `<td${cls}>${inline(c)}</td>`;
 			}
-			t += "</tr>";
+			h += "</tr>";
 		}
-		t += "</tbody></table></div>";
-		result.push(t);
-		inTable = false;
-		tableRows = [];
+		h += "</tbody></table></div>";
+		out.push(h);
+		inTbl = false; tbl = [];
 	}
 
 	for (const line of lines) {
 		if (line.includes("|") && line.trim().startsWith("|")) {
-			const cells = line.split("|").slice(1, -1);
-			if (!inTable) inTable = true;
-			tableRows.push(cells);
+			if (!inTbl) inTbl = true;
+			tbl.push(line.split("|").slice(1, -1));
 			continue;
 		}
-		if (inTable) flushTable();
-		result.push(line);
+		if (inTbl) flushTbl();
+		out.push(line);
 	}
-	if (inTable) flushTable();
+	if (inTbl) flushTbl();
 
-	let html = result
-		.join("\n")
+	return inline(out.join("\n")
 		.replace(/^#{4}\s+(.+)$/gm, '<h4>$1</h4>')
-		.replace(/^#{3}\s+(.+)$/gm, '<h3 class="section-header">$1</h3>')
+		.replace(/^#{3}\s+(.+)$/gm, '<div class="sec-hd">$1</div>')
 		.replace(/^#{2}\s+(.+)$/gm, '<h2>$1</h2>')
-		.replace(/^#{1}\s+(.+)$/gm, '<h1>$1</h1>')
-		.replace(/^---+$/gm, '<hr>')
+		.replace(/^#{1}\s+(.+)$/gm, '<h1 class="rpt-title">$1</h1>')
+		.replace(/^---+$/gm, '')
 		.replace(/^\*\s+(.+)$/gm, "<li>$1</li>")
 		.replace(/((?:<li>.*<\/li>\n?)+)/g, "<ul>$1</ul>")
 		.replace(/\n\n/g, "</p><p>")
-		.replace(/\n/g, "<br>");
-
-	html = processInline(html);
-	return `<div>${html}</div>`;
+		.replace(/\n/g, "<br>"));
 }
 
-function processInline(text: string): string {
-	return text
-		.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
-		.replace(/__(.+?)__/g, "<strong>$1</strong>");
-}
+/* ─── CSS ────────────────────────────────────────── */
 
-// ─── CSS ────────────────────────────────────────────
-
-const CSS = `
-:root{--bg:#0d1117;--surface:#161b22;--surface2:#1c2129;--border:#30363d;--text:#e6edf3;--muted:#8b949e;--accent:#58a6ff;--green:#3fb950;--red:#f85149;--yellow:#d29922;--purple:#bc8cff;--cyan:#39d353;--orange:#f0883e}
+const CSS = /*css*/`
+:root{--bg:#0a0e14;--s1:#131820;--s2:#1a2030;--s3:#222a38;--bd:#2a3245;--tx:#e2e8f0;--tx2:#8892a4;--ac:#60a5fa;--gn:#34d399;--rd:#f87171;--yl:#fbbf24;--pp:#a78bfa;--or:#fb923c;--cy:#22d3ee}
 *{margin:0;padding:0;box-sizing:border-box}
-body{background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;font-size:15px;line-height:1.7}
-a{color:var(--accent);text-decoration:none}a:hover{text-decoration:underline}
-.container{max-width:960px;margin:0 auto;padding:20px}
-nav{background:var(--surface);border-bottom:1px solid var(--border);padding:12px 20px;position:sticky;top:0;z-index:100;display:flex;align-items:center;gap:16px;flex-wrap:wrap}
-nav .title{font-size:18px;font-weight:700;color:var(--text)}
-nav .sep{color:var(--border)}
-nav a{font-weight:600}
-nav .active{color:var(--text);border-bottom:2px solid var(--accent);padding-bottom:2px}
+body{background:var(--bg);color:var(--tx);font-family:'Inter',-apple-system,BlinkMacSystemFont,sans-serif;font-size:14px;line-height:1.65}
+a{color:var(--ac);text-decoration:none}a:hover{text-decoration:underline}
 
-/* Report content */
-.report-content{margin:16px 0}
-.report-content h1{font-size:22px;margin:28px 0 12px;color:var(--text);border-bottom:2px solid var(--border);padding-bottom:8px}
-.report-content h1:first-child{margin-top:0}
-.report-content h2{font-size:18px;color:var(--accent);margin:24px 0 10px}
-.report-content h3.section-header{font-size:16px;color:var(--yellow);margin:20px 0 10px;background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:10px 16px}
-.report-content h4{font-size:14px;color:var(--muted);margin:12px 0 6px}
-.report-content p{margin:6px 0}
-.report-content strong{color:#fff}
-.report-content hr{border:none;border-top:1px solid var(--border);margin:20px 0}
-.report-content ul{margin:8px 0 8px 20px}
-.report-content li{margin:4px 0}
-.report-content li::marker{color:var(--accent)}
-.text-green{color:var(--green)}.text-red{color:var(--red)}.text-yellow{color:var(--yellow)}.text-muted{color:var(--muted)}
+/* Nav */
+.nav{background:linear-gradient(180deg,var(--s1),var(--s2));border-bottom:1px solid var(--bd);padding:0 24px;position:sticky;top:0;z-index:100;display:flex;align-items:center;height:52px;gap:20px;backdrop-filter:blur(12px)}
+.nav-brand{font-size:17px;font-weight:800;letter-spacing:-.3px;background:linear-gradient(135deg,var(--ac),var(--pp));-webkit-background-clip:text;-webkit-text-fill-color:transparent}
+.nav-sep{color:var(--bd);font-size:18px}
+.nav a{font-size:13px;font-weight:600;color:var(--tx2);padding:14px 0;border-bottom:2px solid transparent;transition:all .2s}
+.nav a:hover,.nav a.on{color:var(--tx);text-decoration:none;border-bottom-color:var(--ac)}
 
-/* Tables */
-.table-wrap{overflow-x:auto;margin:12px 0}
-table{width:100%;border-collapse:collapse;font-size:13px;background:var(--surface);border-radius:8px;overflow:hidden}
-th{text-align:left;color:var(--accent);font-weight:600;padding:10px 12px;border-bottom:2px solid var(--border);background:var(--surface2);white-space:nowrap}
-td{padding:8px 12px;border-bottom:1px solid var(--border);font-variant-numeric:tabular-nums}
-tr:hover{background:rgba(88,166,255,0.04)}
+.wrap{max-width:1080px;margin:0 auto;padding:20px}
+
+/* Hero */
+.hero{display:grid;grid-template-columns:1fr auto;gap:20px;padding:24px;background:linear-gradient(135deg,var(--s1),var(--s2));border:1px solid var(--bd);border-radius:16px;margin-bottom:20px}
+.hero-signal{font-size:42px;font-weight:800;line-height:1}
+.hero-conf{font-size:14px;color:var(--tx2);margin-top:6px}
+.hero-date{font-size:28px;font-weight:700;color:var(--tx2)}
+.hero-model{font-size:12px;margin-top:4px}
+
+/* Signal strip */
+.sig-strip{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:8px;margin-bottom:16px}
+.sig-card{background:var(--s1);border:1px solid var(--bd);border-radius:10px;padding:10px 12px;text-align:center;position:relative;overflow:hidden}
+.sig-card::after{content:'';position:absolute;bottom:0;left:0;right:0;height:3px}
+.sig-card.sg::after{background:var(--gn)}.sig-card.sr::after{background:var(--rd)}.sig-card.sy::after{background:var(--yl)}.sig-card.sn::after{background:var(--bd)}
+.sig-label{font-size:11px;color:var(--tx2);text-transform:uppercase;letter-spacing:.5px}
+.sig-val{font-size:15px;font-weight:700;margin-top:2px}
 
 /* Cards */
-.card{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:16px}
-.card-header{font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin-bottom:8px}
-.grid{display:grid;gap:12px}.grid-2{grid-template-columns:1fr 1fr}.grid-3{grid-template-columns:1fr 1fr 1fr}.grid-4{grid-template-columns:repeat(4,1fr)}.grid-5{grid-template-columns:repeat(5,1fr)}
+.card{background:var(--s1);border:1px solid var(--bd);border-radius:12px;padding:16px;margin-bottom:12px}
+.card-hd{font-size:11px;color:var(--tx2);text-transform:uppercase;letter-spacing:.6px;margin-bottom:10px}
+.grid{display:grid;gap:12px}.g2{grid-template-columns:1fr 1fr}.g3{grid-template-columns:1fr 1fr 1fr}.g4{grid-template-columns:repeat(4,1fr)}.g5{grid-template-columns:repeat(5,1fr)}.g6{grid-template-columns:repeat(6,1fr)}
 
-/* Signal badges */
-.badge{display:inline-block;padding:3px 12px;border-radius:14px;font-size:12px;font-weight:600}
-.badge-bull{background:rgba(63,185,80,.15);color:var(--green)}
-.badge-bear{background:rgba(248,81,73,.15);color:var(--red)}
-.badge-neutral{background:rgba(139,148,158,.15);color:var(--muted)}
-.badge-claude{background:rgba(188,140,255,.15);color:#bc8cff}
-.badge-gemini{background:rgba(57,211,83,.15);color:#39d353}
-.badge-warn{background:rgba(210,153,34,.15);color:var(--yellow)}
+/* Positions */
+.pos{background:var(--s2);border:1px solid var(--bd);border-radius:10px;padding:14px;border-left:4px solid var(--bd)}
+.pos.pg{border-left-color:var(--gn)}.pos.pl{border-left-color:var(--rd)}
+.pos-sym{font-size:15px;font-weight:700}
+.pos-dir{font-size:11px;color:var(--tx2);background:var(--s3);padding:1px 8px;border-radius:8px;margin-left:6px}
+.pos-row{display:flex;justify-content:space-between;margin-top:6px;font-size:13px;color:var(--tx2)}
+.pos-pnl{font-size:20px;font-weight:800;margin-top:4px}
 
-/* Big numbers */
-.big-num{font-size:28px;font-weight:700;line-height:1.2}
+/* Gauges */
+.gauge{height:6px;background:var(--s3);border-radius:3px;overflow:hidden;margin:6px 0}
+.gauge-fill{height:100%;border-radius:3px;transition:width .4s}
+.gauge-center{position:relative}.gauge-center::after{content:'';position:absolute;left:50%;top:-2px;width:2px;height:10px;background:var(--tx2);transform:translateX(-1px)}
 
-/* Position cards */
-.pos-card{background:var(--surface2);border:1px solid var(--border);border-radius:10px;padding:14px;position:relative;overflow:hidden}
-.pos-card::before{content:'';position:absolute;top:0;left:0;width:4px;height:100%;border-radius:4px 0 0 4px}
-.pos-card.pos-profit::before{background:var(--green)}.pos-card.pos-loss::before{background:var(--red)}
-.pos-sym{font-size:16px;font-weight:700}.pos-dir{font-size:12px;color:var(--muted);margin-left:6px}
-.pos-detail{font-size:13px;color:var(--muted);margin-top:4px}
-.pos-pnl{font-size:18px;font-weight:700;margin-top:6px}
+/* Metrics */
+.metric{text-align:center}
+.metric-val{font-size:22px;font-weight:800}
+.metric-label{font-size:11px;color:var(--tx2);margin-top:2px}
+.metric-sub{font-size:12px;color:var(--tx2)}
 
-/* Meta bar */
-.meta-bar{display:flex;gap:10px;flex-wrap:wrap;margin:12px 0}
-.meta-pill{background:var(--surface2);border:1px solid var(--border);padding:4px 14px;border-radius:20px;font-size:13px;display:flex;align-items:center;gap:6px}
-.meta-dot{width:8px;height:8px;border-radius:50%;display:inline-block}
+/* Yield curve vis */
+.yc-bar{display:flex;height:32px;border-radius:6px;overflow:hidden;margin:8px 0}
+.yc-bar div{display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;color:var(--bg)}
 
-/* Report list */
-.report-list{list-style:none}
-.report-list li{border-bottom:1px solid var(--border)}
-.report-list a{display:flex;justify-content:space-between;align-items:center;padding:16px;color:var(--text);text-decoration:none;transition:background .15s}
-.report-list a:hover{background:rgba(88,166,255,.06)}
-.report-date{font-size:18px;font-weight:700}.report-info{display:flex;gap:12px;align-items:center;color:var(--muted);font-size:13px}
+/* Heatmap */
+.hm{display:grid;gap:2px;font-size:11px;text-align:center}
+.hm-cell{padding:6px 4px;border-radius:4px;font-weight:600}
 
-/* Report nav */
-.report-nav{display:flex;justify-content:space-between;margin:20px 0;padding:12px 0;border-top:1px solid var(--border)}
+/* Report content */
+.rpt{margin-top:20px}
+.rpt .rpt-title{font-size:20px;margin:24px 0 10px;padding-bottom:8px;border-bottom:2px solid var(--bd)}
+.rpt .rpt-title:first-child{margin-top:0}
+.rpt h2{font-size:17px;color:var(--ac);margin:20px 0 8px}
+.rpt .sec-hd{font-size:15px;font-weight:700;color:var(--yl);margin:24px 0 10px;padding:12px 16px;background:var(--s2);border:1px solid var(--bd);border-radius:10px;border-left:4px solid var(--yl)}
+.rpt h4{font-size:13px;color:var(--tx2)}
+.rpt p{margin:6px 0}.rpt strong{color:#fff}.rpt hr{display:none}
+.rpt ul{margin:6px 0 6px 18px}.rpt li{margin:3px 0}.rpt li::marker{color:var(--ac)}
+.tbl-wrap{overflow-x:auto;margin:12px 0}
+table{width:100%;border-collapse:separate;border-spacing:0;font-size:12px;background:var(--s2);border-radius:8px;overflow:hidden}
+th{text-align:left;color:var(--ac);font-weight:700;padding:10px 12px;background:var(--s3);border-bottom:2px solid var(--bd);white-space:nowrap;font-size:11px;text-transform:uppercase;letter-spacing:.3px}
+td{padding:8px 12px;border-bottom:1px solid rgba(42,50,69,.5);font-variant-numeric:tabular-nums}
+tr:hover td{background:rgba(96,165,250,.04)}
+.c-g{color:var(--gn)}.c-r{color:var(--rd)}.c-y{color:var(--yl)}
 
-footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
-@media(max-width:768px){.grid-2,.grid-3,.grid-4,.grid-5{grid-template-columns:1fr}}
+/* List */
+.rpt-list{list-style:none}
+.rpt-list li{border-bottom:1px solid var(--bd)}
+.rpt-list a{display:flex;justify-content:space-between;align-items:center;padding:16px 20px;color:var(--tx);transition:background .15s}
+.rpt-list a:hover{background:rgba(96,165,250,.05);text-decoration:none}
+.rpt-dt{font-size:17px;font-weight:700}.rpt-info{display:flex;gap:12px;align-items:center;color:var(--tx2);font-size:13px}
+.badge{display:inline-block;padding:2px 10px;border-radius:12px;font-size:11px;font-weight:700}
+.b-cl{background:rgba(167,139,250,.12);color:var(--pp)}.b-gm{background:rgba(52,211,153,.12);color:var(--gn)}
+
+/* Nav links */
+.rpt-nav{display:flex;justify-content:space-between;padding:16px 0;margin-top:20px;border-top:1px solid var(--bd)}
+
+footer{text-align:center;color:var(--tx2);font-size:11px;padding:24px;letter-spacing:.3px}
+@media(max-width:800px){.g2,.g3,.g4,.g5,.g6{grid-template-columns:1fr}.hero{grid-template-columns:1fr}.sig-strip{grid-template-columns:repeat(2,1fr)}}
 `;
 
-// ─── Helpers ────────────────────────────────────────
+/* ─── Components ─────────────────────────────────── */
 
-function renderNav(current: string): string {
-	const items = [
-		{ href: "/", label: "📋 日报列表", key: "list" },
-		{ href: "/latest", label: "📰 最新日报", key: "latest" },
-		{ href: "/usd-model-live.html", label: "💵 USD看板", key: "usd" },
+function nav(active: string) {
+	const links = [
+		["/", "📋 日报列表", "list"],
+		["/latest", "📰 最新日报", "latest"],
+		["/usd-model-live.html", "💵 USD看板", "usd"],
 	];
-	return `<nav>
-		<span class="title">Macro Sniper</span>
-		<span class="sep">|</span>
-		${items.map(i => `<a href="${i.href}" class="${current === i.key ? "active" : ""}">${i.label}</a>`).join("")}
-	</nav>`;
+	return `<div class="nav"><span class="nav-brand">Macro Sniper</span><span class="nav-sep">|</span>${links.map(([h, l, k]) => `<a href="${h}" class="${active === k ? "on" : ""}">${l}</a>`).join("")}</div>`;
 }
 
-function page(title: string, body: string, nav: string, extraHead = ""): string {
-	return `<!DOCTYPE html><html lang="zh-CN"><head>
-		<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0">
-		<title>${title} — Macro Sniper</title>
-		<style>${CSS}</style>${extraHead}
-	</head><body>${nav}<div class="container">${body}</div>
-	<footer>Macro Sniper · 每日 08:00 ET 自动采集分析 · Powered by Claude + FRED + Alpaca</footer>
-	</body></html>`;
+function pg(title: string, body: string, n: string, head = "") {
+	return `<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${title} — Macro Sniper</title><link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800&display=swap" rel="stylesheet"><style>${CSS}</style>${head}</head><body>${n}<div class="wrap">${body}</div><footer>Macro Sniper · Claude + FRED + Binance + Alpaca · 每日 08:00 ET</footer></body></html>`;
 }
 
-function signalBadge(signal: string): string {
-	const bullish = ["risk_on", "expanding", "bullish", "bull_steepener", "bull_flattener"];
-	const bearish = ["risk_off", "risk_off_confirmed", "risk_off_severe", "contracting", "bearish", "bearish_alert", "bear_steepener", "bear_flattener"];
-	const cls = bullish.includes(signal) ? "badge-bull" : bearish.includes(signal) ? "badge-bear" : signal === "conflicted" ? "badge-warn" : "badge-neutral";
-	return `<span class="badge ${cls}">${signal}</span>`;
+function sigClass(s: string) {
+	if (/risk_on|expanding|bullish|bull_/.test(s)) return "sg";
+	if (/risk_off|contracting|bearish|bear_/.test(s)) return "sr";
+	if (s === "conflicted") return "sy";
+	return "sn";
 }
 
-// ─── Route: List ────────────────────────────────────
+function gaugeBar(val: number, max: number, color: string) {
+	const pct = Math.min(100, Math.max(0, (val / max) * 100));
+	return `<div class="gauge gauge-center"><div class="gauge-fill" style="width:${pct}%;background:${color}"></div></div>`;
+}
 
-function handleList(): string {
+function corrColor(v: number): string {
+	if (v > 0.7) return "rgba(52,211,153,.3)";
+	if (v > 0.3) return "rgba(52,211,153,.15)";
+	if (v < -0.3) return "rgba(248,113,113,.25)";
+	if (v < 0) return "rgba(248,113,113,.1)";
+	return "rgba(136,146,164,.1)";
+}
+
+/* ─── Route: Report list ─────────────────────────── */
+
+function handleList() {
 	const db = getDb();
-	const rows = db
-		.select({
-			id: generatedReports.id,
-			date: generatedReports.date,
-			model: generatedReports.model,
-			createdAt: generatedReports.createdAt,
-			len: sql<number>`length(${generatedReports.content})`,
-		})
-		.from(generatedReports)
-		.where(eq(generatedReports.reportType, "daily"))
-		.orderBy(desc(generatedReports.id))
-		.all();
-
+	const rows = db.select({ id: generatedReports.id, date: generatedReports.date, model: generatedReports.model, createdAt: generatedReports.createdAt, len: sql<number>`length(${generatedReports.content})` }).from(generatedReports).where(eq(generatedReports.reportType, "daily")).orderBy(desc(generatedReports.id)).all();
 	const seen = new Set<string>();
-	const unique = rows.filter((r) => {
-		if (seen.has(r.date)) return false;
-		seen.add(r.date);
-		return true;
-	});
+	const uniq = rows.filter(r => { if (seen.has(r.date)) return false; seen.add(r.date); return true; });
+	const bias = latestSignal(db, "market_bias");
+	const items = uniq.map(r => {
+		const b = r.model.includes("claude") ? '<span class="badge b-cl">Claude</span>' : '<span class="badge b-gm">Gemini</span>';
+		return `<li><a href="/report/${r.id}"><span class="rpt-dt">📋 ${r.date}</span><span class="rpt-info">${b}<span>${r.createdAt.substring(11, 16)} UTC</span><span>${(r.len / 1024).toFixed(1)}KB</span></span></a></li>`;
+	}).join("");
 
-	// Get latest signals for header
-	const biasRow = db
-		.select({ signal: analysisResults.signal })
-		.from(analysisResults)
-		.where(eq(analysisResults.type, "market_bias"))
-		.orderBy(desc(analysisResults.date))
-		.limit(1)
-		.all()[0];
-
-	const headerSignal = biasRow ? signalBadge(biasRow.signal) : "";
-
-	const listItems = unique
-		.map((r) => {
-			const modelBadge = r.model.includes("claude")
-				? '<span class="badge badge-claude">Claude</span>'
-				: '<span class="badge badge-gemini">Gemini</span>';
-			const time = `${r.createdAt.substring(11, 16)} UTC`;
-			const size = `${(r.len / 1024).toFixed(1)}KB`;
-			return `<li><a href="/report/${r.id}">
-			<span class="report-date">📋 ${r.date}</span>
-			<span class="report-info">${modelBadge}<span>${time}</span><span>${size}</span></span>
-		</a></li>`;
-		})
-		.join("");
-
-	return page(
-		"日报列表",
-		`
-		<div style="display:flex;align-items:center;gap:16px;margin:20px 0 12px">
-			<h1 style="font-size:22px;margin:0">宏观投研日报</h1>
-			${headerSignal}
+	return pg("日报列表", `
+		<div style="display:flex;align-items:center;gap:16px;margin:20px 0 8px">
+			<h1 style="font-size:24px;font-weight:800">宏观投研日报</h1>
+			${bias ? `<span class="sig-card ${sigClass(bias.signal)}" style="display:inline-block;padding:4px 16px">${bias.signal}</span>` : ""}
 		</div>
-		<p style="color:var(--muted);margin-bottom:16px">共 ${unique.length} 份日报 · 每日 08:00 ET (12:00 UTC) 自动生成</p>
-		<div class="card" style="padding:0;overflow:hidden">
-			<ul class="report-list">${listItems}</ul>
-		</div>`,
-		renderNav("list"),
-	);
+		<p style="color:var(--tx2);margin-bottom:16px">共 ${uniq.length} 份日报 · 每日 08:00 ET 自动生成</p>
+		<div class="card" style="padding:0;overflow:hidden"><ul class="rpt-list">${items}</ul></div>
+	`, nav("list"));
 }
 
-// ─── Route: Report Detail ───────────────────────────
+/* ─── Route: Report detail ───────────────────────── */
 
 function handleReport(id: number): string | null {
 	const db = getDb();
 	const row = db.select().from(generatedReports).where(eq(generatedReports.id, id)).limit(1).all()[0];
 	if (!row) return null;
 
-	const modelBadge = row.model.includes("claude")
-		? '<span class="badge badge-claude">Claude Opus</span>'
-		: '<span class="badge badge-gemini">Gemini Flash</span>';
+	const modelBdg = row.model.includes("claude") ? '<span class="badge b-cl">Claude Opus</span>' : '<span class="badge b-gm">Gemini Flash</span>';
 
-	// ── Positions cards ──
-	const posRows = db.select().from(positions).all();
-	const activePos = posRows.filter((p) => p.direction !== "flat" && p.quantity > 0);
-	const totalPnl = activePos.reduce((s, p) => s + p.unrealizedPnl, 0);
-	const totalCost = activePos.reduce((s, p) => s + p.avgCost * p.quantity, 0);
-	const totalPnlPct = totalCost > 0 ? (totalPnl / totalCost) * 100 : 0;
+	// ── Signals ──
+	const sigs = ["market_bias", "liquidity_signal", "yield_curve", "credit_risk", "sentiment_signal", "btc_signal", "funding_stress", "auction_health"].map(t => {
+		const r = latestSignal(db, t);
+		const labels: Record<string, string> = { market_bias: "🎯 偏向", liquidity_signal: "💧 流动性", yield_curve: "📈 曲线", credit_risk: "🛡️ 信用", sentiment_signal: "🌡️ 情绪", btc_signal: "₿ BTC", funding_stress: "🏦 资金", auction_health: "🏛️ 拍卖" };
+		return r ? `<div class="sig-card ${sigClass(r.signal)}"><div class="sig-label">${labels[t] ?? t}</div><div class="sig-val">${r.signal}</div></div>` : "";
+	}).join("");
 
-	const posCards = activePos
-		.map((p) => {
-			const pnlPct = p.avgCost > 0 ? (p.unrealizedPnl / (p.avgCost * p.quantity)) * 100 : 0;
-			const cls = p.unrealizedPnl >= 0 ? "pos-profit" : "pos-loss";
-			const sign = p.unrealizedPnl >= 0 ? "+" : "";
-			const openDate = p.openedAt ? p.openedAt.split("T")[0] : "—";
-			return `<div class="pos-card ${cls}">
-			<div><span class="pos-sym">${p.symbol}</span><span class="pos-dir">${p.direction.toUpperCase()}</span></div>
-			<div class="pos-detail">${p.quantity.toFixed(4)} 股 · 成本 $${p.avgCost.toFixed(2)} · 建仓 ${openDate}</div>
-			<div class="pos-pnl ${p.unrealizedPnl >= 0 ? "text-green" : "text-red"}">${sign}$${p.unrealizedPnl.toFixed(2)} <span style="font-size:14px">(${sign}${pnlPct.toFixed(2)}%)</span></div>
+	// ── Positions ──
+	const posRows = db.select().from(positions).all().filter(p => p.direction !== "flat" && p.quantity > 0);
+	const totalPnl = posRows.reduce((s, p) => s + p.unrealizedPnl, 0);
+	const totalCost = posRows.reduce((s, p) => s + p.avgCost * p.quantity, 0);
+	const posCards = posRows.map(p => {
+		const pct = p.avgCost > 0 ? (p.unrealizedPnl / (p.avgCost * p.quantity)) * 100 : 0;
+		const s = p.unrealizedPnl >= 0 ? "+" : "";
+		return `<div class="pos ${p.unrealizedPnl >= 0 ? "pg" : "pl"}">
+			<div><span class="pos-sym">${p.symbol}</span><span class="pos-dir">${p.direction}</span></div>
+			<div class="pos-row"><span>${p.quantity.toFixed(4)} @ $${p.avgCost.toFixed(2)}</span><span>${p.openedAt ? p.openedAt.split("T")[0] : "—"}</span></div>
+			<div class="pos-pnl ${p.unrealizedPnl >= 0 ? "c-g" : "c-r"}">${s}$${p.unrealizedPnl.toFixed(2)} <span style="font-size:13px;font-weight:600">(${s}${pct.toFixed(2)}%)</span></div>
 		</div>`;
-		})
-		.join("");
+	}).join("");
 
-	const totalSign = totalPnl >= 0 ? "+" : "";
-	const totalCard =
-		activePos.length > 0
-			? `<div class="card" style="margin:16px 0">
-		<div class="card-header">当前持仓 · 总计 ${totalSign}$${totalPnl.toFixed(2)} (${totalSign}${totalPnlPct.toFixed(2)}%)</div>
-		<div class="grid grid-4" style="margin-top:8px">${posCards}</div>
-	</div>`
-			: "";
+	// ── Key metrics from analysis ──
+	const liq = latestSignal(db, "liquidity_signal");
+	const yc = latestSignal(db, "yield_curve");
+	const sent = latestSignal(db, "sentiment_signal");
+	const usdM = latestSignal(db, "usd_model");
+	const btc = latestSignal(db, "btc_signal");
+	const corr = latestSignal(db, "correlation_matrix");
+	const fund = latestSignal(db, "funding_stress");
+	const bias = latestSignal(db, "market_bias");
 
-	// ── Signal pills ──
-	const signalTypes = ["market_bias", "liquidity_signal", "yield_curve", "credit_risk", "sentiment_signal", "btc_signal", "funding_stress", "auction_health"];
-	const signalLabels: Record<string, string> = {
-		market_bias: "🎯 偏向",
-		liquidity_signal: "💧 流动性",
-		yield_curve: "📈 曲线",
-		credit_risk: "🛡️ 信用",
-		sentiment_signal: "🌡️ 情绪",
-		btc_signal: "₿ BTC",
-		funding_stress: "🏦 资金压力",
-		auction_health: "🏛️ 拍卖",
-	};
-	const signalDots: Record<string, string> = {
-		risk_on: "var(--green)",
-		expanding: "var(--green)",
-		bullish: "var(--green)",
-		bull_steepener: "var(--green)",
-		bull_flattener: "var(--green)",
-		risk_off: "var(--red)",
-		risk_off_confirmed: "var(--red)",
-		contracting: "var(--red)",
-		bearish_alert: "var(--red)",
-		bear_steepener: "var(--red)",
-		bear_flattener: "var(--orange)",
-		conflicted: "var(--yellow)",
-	};
-	const pills = signalTypes
-		.map((t) => {
-			const r = db
-				.select({ signal: analysisResults.signal })
-				.from(analysisResults)
-				.where(eq(analysisResults.type, t))
-				.orderBy(desc(analysisResults.date))
-				.limit(1)
-				.all()[0];
-			if (!r) return "";
-			const dotColor = signalDots[r.signal] ?? "var(--muted)";
-			return `<span class="meta-pill"><span class="meta-dot" style="background:${dotColor}"></span>${signalLabels[t] ?? t}: <strong>${r.signal}</strong></span>`;
-		})
-		.join("");
+	// Liquidity waterfall
+	const lm = liq?.meta;
+	const liqHtml = lm ? `
+		<div class="card"><div class="card-hd">💧 流动性构成 (百万美元)</div>
+		<div class="grid g4" style="text-align:center;margin-top:8px">
+			<div class="metric"><div class="metric-val" style="color:var(--ac)">${(lm.fed_total_assets / 1e6).toFixed(2)}T</div><div class="metric-label">Fed 总资产</div></div>
+			<div class="metric"><div class="metric-val" style="color:var(--or)">−${(lm.tga / 1e6).toFixed(2)}T</div><div class="metric-label">TGA</div></div>
+			<div class="metric"><div class="metric-val" style="color:var(--rd)">−${(lm.on_rrp / 1e6).toFixed(4)}T</div><div class="metric-label">ON RRP</div></div>
+			<div class="metric"><div class="metric-val" style="color:var(--gn)">${(lm.net_liquidity / 1e6).toFixed(2)}T</div><div class="metric-label">净流动性</div><div class="metric-sub">${lm.net_liquidity_7d_change > 0 ? "+" : ""}${(lm.net_liquidity_7d_change / 100).toFixed(1)}亿 7d</div></div>
+		</div></div>` : "";
 
-	// ── Nav between reports ──
-	const prevRow = db
-		.select({ id: generatedReports.id })
-		.from(generatedReports)
-		.where(sql`${generatedReports.id} < ${id}`)
-		.orderBy(desc(generatedReports.id))
-		.limit(1)
-		.all()[0];
-	const nextRow = db
-		.select({ id: generatedReports.id })
-		.from(generatedReports)
-		.where(sql`${generatedReports.id} > ${id}`)
-		.orderBy(generatedReports.id)
-		.limit(1)
-		.all()[0];
+	// Yield curve
+	const ym = yc?.meta;
+	const ycHtml = ym ? `
+		<div class="card"><div class="card-hd">📈 收益率曲线 — ${yc?.signal}</div>
+		<div class="grid g5" style="text-align:center;margin-top:8px">
+			${[["2Y", ym.dgs2], ["10Y", ym.dgs10], ["20Y", ym.dgs20], ["30Y", ym.dgs30]].map(([l, v]) => `<div class="metric"><div class="metric-val">${v != null ? (v as number).toFixed(2) : "—"}%</div><div class="metric-label">${l}</div></div>`).join("")}
+			<div class="metric"><div class="metric-val" style="color:var(--yl)">${ym.spread_10s2s != null ? (ym.spread_10s2s * 100).toFixed(0) : "—"}bp</div><div class="metric-label">10s2s</div><div class="metric-sub">2Y Δ5d ${ym.delta_5d_2y_bps > 0 ? "+" : ""}${ym.delta_5d_2y_bps?.toFixed(0)}bp</div></div>
+		</div></div>` : "";
 
-	return page(
-		`日报 ${row.date}`,
-		`
-		<div style="display:flex;align-items:center;gap:12px;margin-top:16px;flex-wrap:wrap">
-			<h1 style="font-size:22px;margin:0">📋 ${row.date}</h1>
-			${modelBadge}
-			<span style="color:var(--muted);font-size:13px">⏰ ${row.createdAt.substring(0, 19)} UTC</span>
+	// USD model factors
+	const um = usdM?.meta;
+	const usdHtml = um ? `
+		<div class="card"><div class="card-hd">💵 USD 5因子模型 — 综合 ${um.composite_score?.toFixed(1)} — DXY ${um.dxy}</div>
+		${[
+			["利率支撑 r_f", um.rate_support_score, 100, "var(--ac)"],
+			["风险溢价 π_risk", um.risk_premium_score, 100, "var(--or)"],
+			["便利收益 cy", um.convenience_yield_score, 100, "var(--pp)"],
+			["对冲传导", um.hedge_transmission_score, 100, "var(--cy)"],
+			["全球相对", um.global_relative_score, 100, "var(--yl)"],
+		].map(([name, val, max, color]) => `
+			<div style="display:flex;align-items:center;gap:10px;padding:4px 0">
+				<span style="width:90px;font-size:12px;color:var(--tx2)">${name}</span>
+				<span style="width:40px;text-align:right;font-weight:700;font-size:14px;color:${color}">${(val as number)?.toFixed(0)}</span>
+				<div style="flex:1">${gaugeBar(val as number, max as number, color as string)}</div>
+			</div>`).join("")}
+		</div>` : "";
+
+	// Sentiment
+	const sm = sent?.meta;
+	const sentHtml = sm ? `
+		<div class="card"><div class="card-hd">🌡️ 情绪面 — 综合 ${sm.composite_score?.toFixed(1)}</div>
+		<div class="grid g3" style="text-align:center;margin-top:8px">
+			<div class="metric"><div class="metric-val" style="color:${sm.vix > 25 ? "var(--rd)" : sm.vix < 15 ? "var(--gn)" : "var(--yl)"}">${sm.vix?.toFixed(1)}</div><div class="metric-label">VIX</div></div>
+			<div class="metric"><div class="metric-val">${sm.move?.toFixed(1)}</div><div class="metric-label">MOVE</div></div>
+			<div class="metric"><div class="metric-val" style="color:${sm.fear_greed_index < 25 ? "var(--rd)" : sm.fear_greed_index > 75 ? "var(--gn)" : "var(--yl)"}; font-size:28px">${sm.fear_greed_index}</div><div class="metric-label">恐惧贪婪</div><div class="metric-sub">${sm.fear_greed_index < 25 ? "极度恐惧" : sm.fear_greed_index < 40 ? "恐惧" : sm.fear_greed_index < 60 ? "中性" : sm.fear_greed_index < 75 ? "贪婪" : "极度贪婪"}</div></div>
+		</div></div>` : "";
+
+	// BTC
+	const bm = btc?.meta;
+	const btcHtml = bm ? `
+		<div class="card"><div class="card-hd">₿ BTC 信号 — ${btc?.signal}</div>
+		<div class="grid g4" style="text-align:center;margin-top:8px">
+			<div class="metric"><div class="metric-val">$${(bm.btc_price / 1000).toFixed(1)}K</div><div class="metric-label">价格</div><div class="metric-sub">${bm.change_pct_24h > 0 ? "+" : ""}${bm.change_pct_24h?.toFixed(1)}% 24h</div></div>
+			<div class="metric"><div class="metric-val">${bm.technicals_score?.toFixed(0)}</div><div class="metric-label">技术面</div>${gaugeBar(bm.technicals_score, 100, "var(--ac)")}</div>
+			<div class="metric"><div class="metric-val">${bm.derivatives_score?.toFixed(0)}</div><div class="metric-label">衍生品</div>${gaugeBar(bm.derivatives_score, 100, "var(--or)")}</div>
+			<div class="metric"><div class="metric-val">${bm.onchain_score?.toFixed(0) ?? "—"}</div><div class="metric-label">链上</div>${gaugeBar(bm.onchain_score ?? 50, 100, "var(--pp)")}</div>
+		</div></div>` : "";
+
+	// Correlation heatmap
+	const cm = corr?.meta?.window_7d_hourly;
+	const corrSyms = ["SPY", "QQQ", "IWM", "BTCUSD", "DXY"];
+	const corrHtml = cm ? `
+		<div class="card"><div class="card-hd">🔗 7日相关性矩阵 — ${corr?.signal}</div>
+		<div class="hm" style="grid-template-columns:60px repeat(${corrSyms.length},1fr);margin-top:8px">
+			<div></div>${corrSyms.map(s => `<div style="font-weight:700;color:var(--ac);font-size:11px">${s.replace("USD", "")}</div>`).join("")}
+			${corrSyms.map(a => `<div style="font-weight:700;color:var(--ac);font-size:11px;text-align:right;padding-right:8px">${a.replace("USD", "")}</div>${corrSyms.map(b => {
+				if (a === b) return `<div class="hm-cell" style="background:var(--s3);color:var(--tx2)">1.00</div>`;
+				const v = cm[`${a}_${b}`] ?? cm[`${b}_${a}`] ?? null;
+				if (v == null) return `<div class="hm-cell" style="background:var(--s3)">—</div>`;
+				const col = v > 0.5 ? "var(--gn)" : v < -0.3 ? "var(--rd)" : "var(--tx)";
+				return `<div class="hm-cell" style="background:${corrColor(v)};color:${col}">${v.toFixed(2)}</div>`;
+			}).join("")}`).join("")}
+		</div></div>` : "";
+
+	// Recent trades
+	const trades = db.select().from(positionTrades).orderBy(desc(positionTrades.createdAt)).limit(6).all();
+	const tradeHtml = trades.length > 0 ? `
+		<div class="card"><div class="card-hd">📝 最近交易</div>
+		<div class="tbl-wrap"><table><thead><tr><th>时间</th><th>标的</th><th>操作</th><th>方向</th><th>数量</th><th>价格</th><th>PnL</th></tr></thead><tbody>
+		${trades.map(t => {
+			const pnl = t.realizedPnl != null ? `<span class="${t.realizedPnl >= 0 ? "c-g" : "c-r"}">${t.realizedPnl >= 0 ? "+" : ""}$${t.realizedPnl.toFixed(2)}</span>` : "—";
+			const opColors: Record<string, string> = { open: "var(--gn)", close: "var(--rd)", add: "var(--ac)", reduce: "var(--or)", stop_loss: "var(--rd)", flip: "var(--pp)" };
+			return `<tr><td>${t.createdAt.substring(5, 16)}</td><td style="font-weight:700">${t.symbol}</td><td style="color:${opColors[t.operationType] ?? "var(--tx)"}">${t.operationType}</td><td>${t.side}</td><td>${t.quantity.toFixed(4)}</td><td>$${t.price.toFixed(2)}</td><td>${pnl}</td></tr>`;
+		}).join("")}
+		</tbody></table></div></div>` : "";
+
+	// Conflicts
+	const conflicts = bias?.meta?.conflicts ?? [];
+	const conflictHtml = conflicts.length > 0 ? `
+		<div class="card" style="border-left:4px solid var(--yl)"><div class="card-hd">⚠️ 信号冲突</div>
+		${conflicts.map((c: string) => `<p style="margin:4px 0;font-size:13px">• ${c}</p>`).join("")}
+		</div>` : "";
+
+	// Position total
+	const ts = totalPnl >= 0 ? "+" : "";
+	const posSection = posRows.length > 0 ? `
+		<div class="card"><div class="card-hd">📦 当前持仓 · 总计 <span class="${totalPnl >= 0 ? "c-g" : "c-r"}" style="font-size:14px;font-weight:700">${ts}$${totalPnl.toFixed(2)} (${ts}${totalCost > 0 ? (totalPnl / totalCost * 100).toFixed(2) : "0.00"}%)</span></div>
+		<div class="grid g4" style="margin-top:8px">${posCards}</div></div>` : "";
+
+	// Navigation
+	const prev = db.select({ id: generatedReports.id }).from(generatedReports).where(sql`${generatedReports.id} < ${id}`).orderBy(desc(generatedReports.id)).limit(1).all()[0];
+	const next = db.select({ id: generatedReports.id }).from(generatedReports).where(sql`${generatedReports.id} > ${id}`).orderBy(generatedReports.id).limit(1).all()[0];
+
+	return pg(`日报 ${row.date}`, `
+		<div class="hero">
+			<div>
+				<div class="hero-signal" style="color:${bias?.signal === "risk_on" ? "var(--gn)" : bias?.signal === "risk_off" ? "var(--rd)" : bias?.signal === "conflicted" ? "var(--yl)" : "var(--tx2)"}">${bias?.signal ?? "—"}</div>
+				<div class="hero-conf">置信度: ${bias?.meta?.confidence ?? "—"}</div>
+			</div>
+			<div style="text-align:right">
+				<div class="hero-date">${row.date}</div>
+				<div class="hero-model">${modelBdg} · ${row.createdAt.substring(11, 16)} UTC</div>
+			</div>
 		</div>
-		<div class="meta-bar">${pills}</div>
-		${totalCard}
-		<div class="report-content">${mdToHtml(row.content)}</div>
-		<div class="report-nav">
-			${prevRow ? `<a href="/report/${prevRow.id}">← 上一篇</a>` : "<span></span>"}
-			<a href="/">返回列表</a>
-			${nextRow ? `<a href="/report/${nextRow.id}">下一篇 →</a>` : "<span></span>"}
-		</div>`,
-		renderNav("report"),
-	);
+		<div class="sig-strip">${sigs}</div>
+		${conflictHtml}
+		${posSection}
+		<div class="grid g2">
+			${liqHtml}${ycHtml}
+		</div>
+		<div class="grid g2">
+			${usdHtml}${sentHtml}
+		</div>
+		<div class="grid g2">
+			${btcHtml}${corrHtml}
+		</div>
+		${tradeHtml}
+		<details style="margin-top:16px"><summary style="cursor:pointer;color:var(--ac);font-weight:700;padding:12px 0">📄 展开完整报告文本</summary>
+		<div class="rpt card" style="margin-top:8px">${mdToHtml(row.content)}</div></details>
+		<div class="rpt-nav">${prev ? `<a href="/report/${prev.id}">← 上一篇</a>` : "<span></span>"}<a href="/">返回列表</a>${next ? `<a href="/report/${next.id}">下一篇 →</a>` : "<span></span>"}</div>
+	`, nav("report"));
 }
 
-function handleLatest(): string {
+function handleLatest() {
 	const db = getDb();
-	const row = db
-		.select({ id: generatedReports.id })
-		.from(generatedReports)
-		.where(eq(generatedReports.reportType, "daily"))
-		.orderBy(desc(generatedReports.id))
-		.limit(1)
-		.all()[0];
-	if (!row) return page("无日报", '<p class="text-muted">暂无日报数据</p>', renderNav("latest"));
-	return handleReport(row.id) ?? page("无日报", '<p class="text-muted">报告不存在</p>', renderNav("latest"));
+	const r = db.select({ id: generatedReports.id }).from(generatedReports).where(eq(generatedReports.reportType, "daily")).orderBy(desc(generatedReports.id)).limit(1).all()[0];
+	if (!r) return pg("无日报", '<p style="color:var(--tx2)">暂无数据</p>', nav("latest"));
+	return handleReport(r.id) ?? pg("404", "<h1>Not Found</h1>", nav(""));
 }
 
-// ─── HTTP Server ────────────────────────────────────
+/* ─── Server ─────────────────────────────────────── */
 
 const server = createServer((req, res) => {
-	const url = new URL(req.url ?? "/", `http://${req.headers.host}`);
-	const path = url.pathname;
-
+	const path = new URL(req.url ?? "/", `http://${req.headers.host}`).pathname;
 	try {
 		let html: string | null = null;
-
-		if (path === "/" || path === "/index.html") {
-			html = handleList();
-		} else if (path === "/latest") {
-			html = handleLatest();
-		} else if (path.startsWith("/report/")) {
-			const id = Number.parseInt(path.split("/")[2], 10);
-			if (!Number.isNaN(id)) {
-				html = handleReport(id);
-			}
-		} else if (path.endsWith(".html")) {
-			try {
-				const filePath = join(DASHBOARD_DIR, path.replace(/^\//, ""));
-				const content = readFileSync(filePath, "utf-8");
-				res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
-				res.end(content);
-				return;
-			} catch {
-				// fall through
-			}
-		}
-
-		if (html) {
-			res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
-			res.end(html);
-		} else {
-			res.writeHead(404, { "Content-Type": "text/html; charset=utf-8" });
-			res.end(page("404", "<h1>404 Not Found</h1>", renderNav("")));
-		}
-	} catch (err) {
-		console.error("Request error:", err);
-		res.writeHead(500, { "Content-Type": "text/plain" });
-		res.end("Internal Server Error");
-	}
+		if (path === "/" || path === "/index.html") html = handleList();
+		else if (path === "/latest") html = handleLatest();
+		else if (path.startsWith("/report/")) { const id = Number.parseInt(path.split("/")[2], 10); if (!Number.isNaN(id)) html = handleReport(id); }
+		else if (path.endsWith(".html")) { try { res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" }); res.end(readFileSync(join(DIR, path.replace(/^\//, "")), "utf-8")); return; } catch { /* fall */ } }
+		if (html) { res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" }); res.end(html); }
+		else { res.writeHead(404, { "Content-Type": "text/html" }); res.end(pg("404", "<h1>404</h1>", nav(""))); }
+	} catch (e) { console.error(e); res.writeHead(500); res.end("Error"); }
 });
 
-server.listen(PORT, "0.0.0.0", () => {
-	console.log(`Dashboard running at http://0.0.0.0:${PORT}/`);
-	console.log(`External: http://149.28.17.145:${PORT}/`);
-});
+server.listen(PORT, "0.0.0.0", () => console.log(`http://0.0.0.0:${PORT}/`));
