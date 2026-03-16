@@ -204,32 +204,53 @@ new Chart(document.getElementById('factorChart'), {
 });
 
 // ─── Composite vs Prices ──────────────────
+// Normalize price series to % change from first data point (base = 0%)
 const priceColors = { SPY: '#58a6ff', QQQ: '#bc8cff', IWM: '#39d353', BTCUSD: '#f0883e' };
-const priceDatasets = Object.entries(DATA.prices).map(([sym, rows]) => ({
-	label: sym,
-	data: rows.map(r => ({ x: r.date.slice(5), y: r.close })),
-	borderColor: priceColors[sym],
-	tension: 0.3, pointRadius: 2, yAxisID: 'yPrice'
-}));
+function pctChange(rows) {
+	if (!rows.length) return [];
+	const base = rows[0].close;
+	return rows.map(r => ({ date: r.date.slice(5), pct: ((r.close - base) / base) * 100 }));
+}
+// DXY % change from first point
+const dxyBase = usd[0]?.dxy ?? 100;
+const dxyPct = usd.map(d => d.dxy != null ? ((d.dxy - dxyBase) / dxyBase) * 100 : null);
+
+const pricePctDatasets = ['SPY', 'QQQ'].map(sym => {
+	const rows = DATA.prices[sym] ?? [];
+	const pct = pctChange(rows);
+	// Align to usd dates
+	const pctMap = {};
+	pct.forEach(p => pctMap[p.date] = p.pct);
+	return {
+		label: sym + ' %',
+		data: dates.map(d => pctMap[d] ?? null),
+		borderColor: priceColors[sym],
+		tension: 0.3, pointRadius: 3, yAxisID: 'yPct',
+		spanGaps: true
+	};
+});
+
 new Chart(document.getElementById('compositeChart'), {
 	type: 'line',
 	data: {
 		labels: dates,
 		datasets: [
-			{ label: 'USD Composite', data: usd.map(d => d.composite_score), borderColor: '#f85149', borderWidth: 3, tension: 0.3, pointRadius: 4, yAxisID: 'yUSD', borderDash: [5, 5] },
-			{ label: 'DXY', data: usd.map(d => d.dxy), borderColor: '#d29922', borderWidth: 2, tension: 0.3, pointRadius: 3, yAxisID: 'yDXY' },
-			...priceDatasets.filter(d => d.label === 'SPY' || d.label === 'QQQ')
+			{ label: 'USD Score', data: usd.map(d => d.composite_score), borderColor: '#f85149', borderWidth: 3, tension: 0.3, pointRadius: 4, yAxisID: 'yUSD', borderDash: [5, 5] },
+			{ label: 'DXY %', data: dxyPct, borderColor: '#d29922', borderWidth: 2, tension: 0.3, pointRadius: 3, yAxisID: 'yPct' },
+			...pricePctDatasets
 		]
 	},
 	options: {
 		responsive: true, maintainAspectRatio: false,
 		scales: {
-			yUSD: { position: 'left', min: 30, max: 80, grid: { color: '#30363d' }, ticks: { color: '#f85149' }, title: { display: true, text: 'USD Score', color: '#f85149' } },
-			yDXY: { position: 'right', grid: { drawOnChartArea: false }, ticks: { color: '#d29922' }, title: { display: true, text: 'DXY', color: '#d29922' } },
-			yPrice: { display: false },
+			yUSD: { position: 'left', min: 30, max: 80, grid: { color: '#30363d' }, ticks: { color: '#f85149' }, title: { display: true, text: 'USD Score (0-100)', color: '#f85149' } },
+			yPct: { position: 'right', grid: { drawOnChartArea: false }, ticks: { color: '#8b949e', callback: v => v.toFixed(1) + '%' }, title: { display: true, text: '% 变化 (基准=首日)', color: '#8b949e' } },
 			x: { grid: { color: '#30363d' }, ticks: { color: '#8b949e' } }
 		},
-		plugins: { legend: { labels: { color: '#e6edf3', usePointStyle: true } } }
+		plugins: {
+			legend: { labels: { color: '#e6edf3', usePointStyle: true } },
+			tooltip: { callbacks: { label: ctx => ctx.dataset.yAxisID === 'yPct' ? ctx.dataset.label + ': ' + ctx.parsed.y.toFixed(2) + '%' : ctx.dataset.label + ': ' + ctx.parsed.y.toFixed(1) } }
+		}
 	}
 });
 
