@@ -9,10 +9,10 @@
 import { readFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { join } from "node:path";
-import { desc, eq, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gte, sql } from "drizzle-orm";
 import { getDb } from "../src/db/client.js";
 import { runMigrations } from "../src/db/migrate.js";
-import { analysisResults, generatedReports, positions, positionTrades } from "../src/db/schema.js";
+import { analysisResults, generatedReports, positions, positionTrades, riskState, yieldSnapshots } from "../src/db/schema.js";
 
 runMigrations();
 
@@ -187,13 +187,14 @@ function nav(active: string) {
 	const links = [
 		["/", "📋 日报列表", "list"],
 		["/latest", "📰 最新日报", "latest"],
+		["/positions", "📦 持仓交易", "positions"],
 		["/usd-model-live.html", "💵 USD看板", "usd"],
 	];
 	return `<div class="nav"><span class="nav-brand">Macro Sniper</span><span class="nav-sep">|</span>${links.map(([h, l, k]) => `<a href="${h}" class="${active === k ? "on" : ""}">${l}</a>`).join("")}</div>`;
 }
 
 function pg(title: string, body: string, n: string, head = "") {
-	return `<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${title} — Macro Sniper</title><link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800&display=swap" rel="stylesheet"><style>${CSS}</style>${head}</head><body>${n}<div class="wrap">${body}</div><footer>Macro Sniper · Claude + FRED + Binance + Alpaca · 每日 08:00 ET</footer></body></html>`;
+	return `<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${title} — Macro Sniper</title><link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800&display=swap" rel="stylesheet"><script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"><\/script><style>${CSS}</style>${head}</head><body>${n}<div class="wrap">${body}</div><footer>Macro Sniper · Claude + FRED + Binance + Alpaca · 每日 08:00 ET</footer></body></html>`;
 }
 
 function sigClass(s: string) {
@@ -290,14 +291,63 @@ function handleReport(id: number): string | null {
 			<div class="metric"><div class="metric-val" style="color:var(--gn)">${(lm.net_liquidity / 1e6).toFixed(2)}T</div><div class="metric-label">净流动性</div><div class="metric-sub">${lm.net_liquidity_7d_change > 0 ? "+" : ""}${(lm.net_liquidity_7d_change / 100).toFixed(1)}亿 7d</div></div>
 		</div></div>` : "";
 
-	// Yield curve
+	// Yield curve with Chart.js
 	const ym = yc?.meta;
+	// Fetch historical yield data for chart
+	const ycSeries = ["DGS2", "DGS5", "DGS10", "DGS20", "DGS30"];
+	const ycLabels = ["2Y", "5Y", "10Y", "20Y", "30Y"];
+	const ycHistData: Record<string, { date: string; value: number }[]> = {};
+	const since30d = new Date(Date.now() - 30 * 86400000).toISOString().split("T")[0];
+	for (const s of ycSeries) {
+		ycHistData[s] = db.select({ date: yieldSnapshots.dataDate, value: yieldSnapshots.value }).from(yieldSnapshots)
+			.where(and(eq(yieldSnapshots.seriesId, s), gte(yieldSnapshots.dataDate, since30d)))
+			.orderBy(asc(yieldSnapshots.dataDate)).all();
+	}
+	// Current curve points for shape chart
+	const curvePoints = ycSeries.map(s => {
+		const rows = ycHistData[s];
+		return rows.length > 0 ? rows[rows.length - 1].value : null;
+	});
+	// Previous curve (5 days ago) for comparison
+	const prevPoints = ycSeries.map(s => {
+		const rows = ycHistData[s];
+		return rows.length > 5 ? rows[rows.length - 6].value : rows.length > 0 ? rows[0].value : null;
+	});
+	// Unique dates for time series
+	const ycDates = [...new Set(Object.values(ycHistData).flatMap(rows => rows.map(r => r.date)))].sort();
+
+	const chartData = JSON.stringify({
+		curvePoints, prevPoints, ycLabels,
+		timeSeries: {
+			dates: ycDates.map(d => d.slice(5)),
+			series: ycSeries.map((s, i) => ({ label: ycLabels[i], data: ycDates.map(d => ycHistData[s].find(r => r.date === d)?.value ?? null) }))
+		}
+	});
+
 	const ycHtml = ym ? `
-		<div class="card"><div class="card-hd">📈 收益率曲线 — ${yc?.signal}</div>
-		<div class="grid g5" style="text-align:center;margin-top:8px">
+		<div class="card"><div class="card-hd">📈 收益率曲线 — <span style="color:${sigClass(yc?.signal ?? "") === "sg" ? "var(--gn)" : sigClass(yc?.signal ?? "") === "sr" ? "var(--rd)" : "var(--yl)"}">${yc?.signal}</span></div>
+		<div class="grid g5" style="text-align:center;margin:8px 0">
 			${[["2Y", ym.dgs2], ["10Y", ym.dgs10], ["20Y", ym.dgs20], ["30Y", ym.dgs30]].map(([l, v]) => `<div class="metric"><div class="metric-val">${v != null ? (v as number).toFixed(2) : "—"}%</div><div class="metric-label">${l}</div></div>`).join("")}
 			<div class="metric"><div class="metric-val" style="color:var(--yl)">${ym.spread_10s2s != null ? (ym.spread_10s2s * 100).toFixed(0) : "—"}bp</div><div class="metric-label">10s2s</div><div class="metric-sub">2Y Δ5d ${ym.delta_5d_2y_bps > 0 ? "+" : ""}${ym.delta_5d_2y_bps?.toFixed(0)}bp</div></div>
-		</div></div>` : "";
+		</div>
+		<div class="grid g2" style="margin-top:12px">
+			<div><div style="font-size:11px;color:var(--tx2);margin-bottom:4px">曲线形态 (今日 vs 5日前)</div><div style="height:180px"><canvas id="ycShape"></canvas></div></div>
+			<div><div style="font-size:11px;color:var(--tx2);margin-bottom:4px">利率走势</div><div style="height:180px"><canvas id="ycHist"></canvas></div></div>
+		</div>
+		<script>
+		(function(){
+			const D=${chartData};
+			const colors=['#60a5fa','#22d3ee','#fbbf24','#fb923c','#f87171'];
+			// Shape chart
+			new Chart(document.getElementById('ycShape'),{type:'line',data:{labels:D.ycLabels,datasets:[
+				{label:'今日',data:D.curvePoints,borderColor:'#60a5fa',borderWidth:3,pointRadius:5,pointBackgroundColor:'#60a5fa',tension:.3,fill:false},
+				{label:'5日前',data:D.prevPoints,borderColor:'rgba(136,146,164,.5)',borderWidth:2,borderDash:[5,3],pointRadius:3,pointBackgroundColor:'rgba(136,146,164,.5)',tension:.3,fill:false}
+			]},options:{responsive:true,maintainAspectRatio:false,scales:{y:{grid:{color:'rgba(42,50,69,.5)'},ticks:{color:'#8892a4',callback:v=>v+'%'}},x:{grid:{color:'rgba(42,50,69,.3)'},ticks:{color:'#8892a4'}}},plugins:{legend:{labels:{color:'#e2e8f0',usePointStyle:true,pointStyle:'circle',boxWidth:6}}}}});
+			// History chart
+			new Chart(document.getElementById('ycHist'),{type:'line',data:{labels:D.timeSeries.dates,datasets:D.timeSeries.series.map((s,i)=>({label:s.label,data:s.data,borderColor:colors[i],borderWidth:2,pointRadius:2,tension:.3,spanGaps:true}))},options:{responsive:true,maintainAspectRatio:false,scales:{y:{grid:{color:'rgba(42,50,69,.5)'},ticks:{color:'#8892a4',callback:v=>v+'%'}},x:{grid:{color:'rgba(42,50,69,.3)'},ticks:{color:'#8892a4',maxTicksLimit:8}}},plugins:{legend:{labels:{color:'#e2e8f0',usePointStyle:true,pointStyle:'circle',boxWidth:6}}}}});
+		})();
+		</script>
+		</div>` : "";
 
 	// USD model factors
 	const um = usdM?.meta;
@@ -420,6 +470,149 @@ function handleLatest() {
 	return handleReport(r.id) ?? pg("404", "<h1>Not Found</h1>", nav(""));
 }
 
+/* ─── Route: Positions & Trades ───────────────────── */
+
+function handlePositions() {
+	const db = getDb();
+
+	// Current positions
+	const posRows = db.select().from(positions).all();
+	const activePos = posRows.filter(p => p.direction !== "flat" && p.quantity > 0);
+	const totalPnl = activePos.reduce((s, p) => s + p.unrealizedPnl, 0);
+	const totalCost = activePos.reduce((s, p) => s + p.avgCost * p.quantity, 0);
+	const totalMv = activePos.reduce((s, p) => s + p.currentPrice * p.quantity, 0);
+	const totalPnlPct = totalCost > 0 ? (totalPnl / totalCost) * 100 : 0;
+
+	// Risk state
+	const riskRows = db.select().from(riskState).all();
+	const riskMap = new Map(riskRows.map(r => [r.key, r.value]));
+	const riskLevel = riskMap.get("risk_level") ?? "normal";
+	const portfolioHwm = Number(riskMap.get("portfolio_hwm") ?? "0");
+	const drawdown = portfolioHwm > 0 ? ((portfolioHwm - (totalMv + totalCost)) / portfolioHwm * 100) : 0;
+
+	// Position cards with more detail
+	const posCardsFull = activePos.map(p => {
+		const pct = p.avgCost > 0 ? (p.unrealizedPnl / (p.avgCost * p.quantity)) * 100 : 0;
+		const mv = p.currentPrice * p.quantity;
+		const s = p.unrealizedPnl >= 0 ? "+" : "";
+		const holdDays = p.openedAt ? ((Date.now() - new Date(p.openedAt).getTime()) / 86400000).toFixed(1) : "—";
+		return `<div class="pos ${p.unrealizedPnl >= 0 ? "pg" : "pl"}" style="padding:18px">
+			<div style="display:flex;justify-content:space-between;align-items:center">
+				<div><span class="pos-sym" style="font-size:18px">${p.symbol}</span><span class="pos-dir">${p.direction}</span></div>
+				<div class="pos-pnl ${p.unrealizedPnl >= 0 ? "c-g" : "c-r"}" style="font-size:24px">${s}$${p.unrealizedPnl.toFixed(2)}</div>
+			</div>
+			<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-top:12px;text-align:center">
+				<div><div style="font-size:16px;font-weight:700">${p.quantity.toFixed(4)}</div><div style="font-size:11px;color:var(--tx2)">数量</div></div>
+				<div><div style="font-size:16px;font-weight:700">$${p.avgCost.toFixed(2)}</div><div style="font-size:11px;color:var(--tx2)">成本价</div></div>
+				<div><div style="font-size:16px;font-weight:700">$${p.currentPrice.toFixed(2)}</div><div style="font-size:11px;color:var(--tx2)">现价</div></div>
+				<div><div style="font-size:16px;font-weight:700;color:${p.unrealizedPnl >= 0 ? "var(--gn)" : "var(--rd)"}">${s}${pct.toFixed(2)}%</div><div style="font-size:11px;color:var(--tx2)">盈亏%</div></div>
+			</div>
+			<div style="display:flex;justify-content:space-between;margin-top:10px;font-size:12px;color:var(--tx2)">
+				<span>市值 $${mv.toFixed(2)}</span>
+				<span>建仓 ${p.openedAt ? p.openedAt.split("T")[0] : "—"}</span>
+				<span>持有 ${holdDays}天</span>
+				<span>HWM $${p.highWaterMark?.toFixed(2) ?? "—"}</span>
+			</div>
+		</div>`;
+	}).join("");
+
+	// All trades
+	const allTrades = db.select().from(positionTrades).orderBy(desc(positionTrades.createdAt)).all();
+
+	// Stats
+	const closedTrades = allTrades.filter(t => t.realizedPnl != null);
+	const wins = closedTrades.filter(t => t.realizedPnl! > 0);
+	const losses = closedTrades.filter(t => t.realizedPnl! < 0);
+	const totalRealizedPnl = closedTrades.reduce((s, t) => s + (t.realizedPnl ?? 0), 0);
+	const winRate = closedTrades.length > 0 ? (wins.length / closedTrades.length * 100) : 0;
+	const avgWin = wins.length > 0 ? wins.reduce((s, t) => s + t.realizedPnl!, 0) / wins.length : 0;
+	const avgLoss = losses.length > 0 ? losses.reduce((s, t) => s + t.realizedPnl!, 0) / losses.length : 0;
+	const profitFactor = Math.abs(avgLoss) > 0 ? Math.abs(avgWin / avgLoss) : 0;
+
+	// Per-symbol PnL
+	const symPnl: Record<string, { pnl: number; trades: number; wins: number }> = {};
+	for (const t of closedTrades) {
+		if (!symPnl[t.symbol]) symPnl[t.symbol] = { pnl: 0, trades: 0, wins: 0 };
+		symPnl[t.symbol].pnl += t.realizedPnl!;
+		symPnl[t.symbol].trades++;
+		if (t.realizedPnl! > 0) symPnl[t.symbol].wins++;
+	}
+
+	const opIcons: Record<string, string> = { open: "🟢", close: "🔴", add: "📈", reduce: "📉", flip: "🔄", stop_loss: "🚨", btc_crash: "⚠️" };
+	const opColors: Record<string, string> = { open: "var(--gn)", close: "var(--rd)", add: "var(--ac)", reduce: "var(--or)", stop_loss: "var(--rd)", flip: "var(--pp)", btc_crash: "var(--yl)" };
+
+	const tradeRows = allTrades.map(t => {
+		const pnl = t.realizedPnl != null ? `<span class="${t.realizedPnl >= 0 ? "c-g" : "c-r"}">${t.realizedPnl >= 0 ? "+" : ""}$${t.realizedPnl.toFixed(2)}</span>` : "—";
+		const holdStr = t.holdingDuration != null && t.holdingDuration > 0 ? (t.holdingDuration >= 86400 ? (t.holdingDuration / 86400).toFixed(1) + "d" : (t.holdingDuration / 3600).toFixed(1) + "h") : "—";
+		const icon = opIcons[t.operationType] ?? "•";
+		return `<tr>
+			<td>${t.createdAt.substring(0, 16).replace("T", " ")}</td>
+			<td style="font-weight:700">${t.symbol}</td>
+			<td style="color:${opColors[t.operationType] ?? "var(--tx)"}">${icon} ${t.operationType}</td>
+			<td>${t.side}</td>
+			<td>${t.quantity.toFixed(4)}</td>
+			<td>$${t.price.toFixed(2)}</td>
+			<td>$${t.notional.toFixed(0)}</td>
+			<td>${pnl}</td>
+			<td>${t.realizedPnlPct != null ? `${(t.realizedPnlPct * 100).toFixed(2)}%` : "—"}</td>
+			<td>${holdStr}</td>
+			<td style="font-size:11px;color:var(--tx2)">${t.trigger}</td>
+		</tr>`;
+	}).join("");
+
+	return pg("持仓与交易", `
+		<h1 style="font-size:24px;font-weight:800;margin:20px 0 16px">📦 持仓与交易</h1>
+
+		<div class="grid g2" style="margin-bottom:16px">
+			<div class="card">
+				<div class="card-hd">账户概览</div>
+				<div class="grid g4" style="text-align:center;margin-top:8px">
+					<div class="metric"><div class="metric-val ${totalPnl >= 0 ? "c-g" : "c-r"}">${totalPnl >= 0 ? "+" : ""}$${totalPnl.toFixed(2)}</div><div class="metric-label">未实现盈亏</div></div>
+					<div class="metric"><div class="metric-val">$${totalMv.toFixed(0)}</div><div class="metric-label">持仓市值</div></div>
+					<div class="metric"><div class="metric-val" style="color:${riskLevel === "normal" ? "var(--gn)" : riskLevel === "halt" ? "var(--rd)" : "var(--yl)"}">${riskLevel}</div><div class="metric-label">风控等级</div></div>
+					<div class="metric"><div class="metric-val">${activePos.length}</div><div class="metric-label">持仓数</div></div>
+				</div>
+			</div>
+			<div class="card">
+				<div class="card-hd">交易统计</div>
+				<div class="grid g4" style="text-align:center;margin-top:8px">
+					<div class="metric"><div class="metric-val ${totalRealizedPnl >= 0 ? "c-g" : "c-r"}">${totalRealizedPnl >= 0 ? "+" : ""}$${totalRealizedPnl.toFixed(2)}</div><div class="metric-label">累计已实现PnL</div></div>
+					<div class="metric"><div class="metric-val">${winRate.toFixed(0)}%</div><div class="metric-label">胜率 (${wins.length}W/${losses.length}L)</div></div>
+					<div class="metric"><div class="metric-val">${profitFactor.toFixed(2)}</div><div class="metric-label">盈亏比</div></div>
+					<div class="metric"><div class="metric-val">${allTrades.length}</div><div class="metric-label">总交易笔数</div></div>
+				</div>
+			</div>
+		</div>
+
+		<div class="card" style="margin-bottom:16px">
+			<div class="card-hd">按标的PnL</div>
+			<div class="grid g5" style="text-align:center;margin-top:8px">
+				${Object.entries(symPnl).map(([sym, d]) => `
+					<div class="metric">
+						<div class="metric-val ${d.pnl >= 0 ? "c-g" : "c-r"}" style="font-size:18px">${d.pnl >= 0 ? "+" : ""}$${d.pnl.toFixed(2)}</div>
+						<div class="metric-label">${sym}</div>
+						<div class="metric-sub">${d.wins}/${d.trades} 胜 (${d.trades > 0 ? (d.wins / d.trades * 100).toFixed(0) : 0}%)</div>
+					</div>
+				`).join("")}
+			</div>
+		</div>
+
+		${activePos.length > 0 ? `
+		<div class="card" style="margin-bottom:16px">
+			<div class="card-hd">当前持仓 · 总计 <span class="${totalPnl >= 0 ? "c-g" : "c-r"}" style="font-size:14px;font-weight:700">${totalPnl >= 0 ? "+" : ""}$${totalPnl.toFixed(2)} (${totalPnl >= 0 ? "+" : ""}${totalPnlPct.toFixed(2)}%)</span></div>
+			<div class="grid g2" style="margin-top:8px">${posCardsFull}</div>
+		</div>` : '<div class="card"><div class="card-hd">当前持仓</div><p style="color:var(--tx2)">空仓</p></div>'}
+
+		<div class="card">
+			<div class="card-hd">全部交易记录 (${allTrades.length} 笔)</div>
+			<div class="tbl-wrap"><table>
+				<thead><tr><th>时间</th><th>标的</th><th>操作</th><th>方向</th><th>数量</th><th>价格</th><th>金额</th><th>PnL</th><th>PnL%</th><th>持仓</th><th>触发</th></tr></thead>
+				<tbody>${tradeRows}</tbody>
+			</table></div>
+		</div>
+	`, nav("positions"));
+}
+
 /* ─── Server ─────────────────────────────────────── */
 
 const server = createServer((req, res) => {
@@ -428,6 +621,7 @@ const server = createServer((req, res) => {
 		let html: string | null = null;
 		if (path === "/" || path === "/index.html") html = handleList();
 		else if (path === "/latest") html = handleLatest();
+		else if (path === "/positions") html = handlePositions();
 		else if (path.startsWith("/report/")) { const id = Number.parseInt(path.split("/")[2], 10); if (!Number.isNaN(id)) html = handleReport(id); }
 		else if (path.endsWith(".html")) { try { res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" }); res.end(readFileSync(join(DIR, path.replace(/^\//, "")), "utf-8")); return; } catch { /* fall */ } }
 		if (html) { res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" }); res.end(html); }
