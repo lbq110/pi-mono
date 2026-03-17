@@ -704,10 +704,20 @@ const server = createServer((req, res) => {
 		else if (path === "/latest") html = handleLatest();
 		else if (path === "/positions") html = handlePositions();
 		else if (path.startsWith("/report/")) { const id = Number.parseInt(path.split("/")[2], 10); if (!Number.isNaN(id)) html = handleReport(id); }
-		else if (path.endsWith(".html")) { try { res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" }); res.end(readFileSync(join(DIR, path.replace(/^\//, "")), "utf-8")); return; } catch { /* fall */ } }
+		else if (path.endsWith(".html")) {
+			try {
+				const filePath = join(DIR, path.replace(/^\//, ""));
+				const content = readFileSync(filePath, "utf-8");
+				res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+				res.end(content);
+				return;
+			} catch {
+				// file not found, fall through to 404
+			}
+		}
 		if (html) { res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" }); res.end(html); }
 		else { res.writeHead(404, { "Content-Type": "text/html" }); res.end(pg("404", "<h1>404</h1>", nav(""))); }
-	} catch (e) { console.error(e); res.writeHead(500); res.end("Error"); }
+	} catch (e) { console.error(e); if (!res.headersSent) { res.writeHead(500); res.end("Error"); } }
 });
 
 server.listen(PORT, "0.0.0.0", () => console.log(`http://0.0.0.0:${PORT}/`));
